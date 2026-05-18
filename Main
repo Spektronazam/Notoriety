@@ -1,0 +1,2597 @@
+--[[
+    SocrateS - Notoriety
+    -Iris made this <3
+
+    v4.9:
+    - Better Typechecking (Strict Luau implementation)
+    - Better OTH & Actor implementation (Madium API support)
+    - Removed Automation tab
+    - UI formatting and text position fixed
+]]--
+
+-- ==================== UI LIB (OBSIDIAN) ====================
+local repo: string = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/"
+
+local ok: boolean, uiLib: any, themeMgr: any, saveMgr: any = pcall(function()
+    local lib = loadstring(game:HttpGet(repo .. "Library.lua"))()
+    local theme = loadstring(game:HttpGet(repo .. "addons/ThemeManager.lua"))()
+    local save = loadstring(game:HttpGet(repo .. "addons/SaveManager.lua"))()
+    return lib, theme, save
+end)
+
+if not ok then
+    warn("[SocrateS] Failed to load Obsidian UI library:", uiLib)
+    return
+end
+
+local Library = uiLib
+local ThemeManager = themeMgr
+local SaveManager = saveMgr
+
+local Options = Library.Options
+local Toggles = Library.Toggles
+
+-- ==================== SERVICES ====================
+local Players: Players = game:GetService("Players")
+local ReplicatedStorage: ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService: RunService = game:GetService("RunService")
+local UserInputService: UserInputService = game:GetService("UserInputService")
+local Workspace: Workspace = game:GetService("Workspace")
+local VirtualInputManager: VirtualInputManager = game:GetService("VirtualInputManager")
+
+local LocalPlayer: Player = Players.LocalPlayer
+local Mouse: Mouse = LocalPlayer:GetMouse()
+local Camera: Camera = Workspace.CurrentCamera
+
+-- ==================== OTH LIBRARY ====================
+-- Support for Madium's OTH (Object Tree Hook) API
+local othEnv = (typeof(getgenv) == "function" and getgenv().oth) or nil
+local hasOthAPI: boolean = typeof(othEnv) == "table" and typeof(othEnv.hook) == "function"
+
+local OthLib = {
+    IsSupported = hasOthAPI,
+    hook = hasOthAPI and othEnv.hook or (typeof(hookfunction) == "function" and hookfunction or nil),
+    unhook = hasOthAPI and othEnv.unhook or (typeof(restorefunction) == "function" and restorefunction or nil),
+}
+
+if OthLib.IsSupported then
+    print("[SocrateS] OTH Hooking API supported and initialized.")
+end
+
+-- ==================== ACTOR WORKER ====================
+-- Uses executor Actors library if present (Madium / Synapse / etc.)
+local hasActorAPI: boolean = typeof(run_on_actor) == "function"
+    and typeof(create_comm_channel) == "function"
+    and typeof(get_comm_channel) == "function"
+    and typeof(getactors) == "function"
+
+local ActorWorker = {
+    use = hasActorAPI,
+    channelId = nil :: string?,
+    channel = nil :: any?,
+}
+
+if ActorWorker.use then
+    local actors: {Actor} = getactors()
+    local actor: Actor? = actors[1]
+
+    if not actor then
+        actor = Instance.new("Actor")
+        actor.Name = "SocrateS_WorkerActor"
+        actor.Parent = Workspace
+    end
+
+    local id: string, channel: any = create_comm_channel("SocrateS_Worker")
+    ActorWorker.channelId = id
+    ActorWorker.channel = channel
+
+    local okActor: boolean, errActor: string = pcall(function()
+        run_on_actor(actor, [[
+            local Workspace: Workspace = game:GetService("Workspace")
+            local Players: Players = game:GetService("Players")
+
+            local function safeCall(fn: () -> ()): boolean
+                local ok: boolean, err: string = pcall(fn)
+                if not ok then
+                    warn("[SocrateS/Actor] " .. tostring(err))
+                end
+                return ok
+            end
+
+            local function createHighlight(object: Instance, color: Color3): Highlight?
+                if not object or not object:IsDescendantOf(Workspace) then
+                    return nil
+                end
+
+                local highlight: Highlight = Instance.new("Highlight")
+                highlight.FillColor = color
+                highlight.OutlineColor = color
+                highlight.FillTransparency = 0.4
+                highlight.OutlineTransparency = 0
+                highlight.Adornee = object
+                highlight.Parent = object
+
+                return highlight
+            end
+
+            local function clearHighlights(tbl: {Highlight?})
+                for i = #tbl, 1, -1 do
+                    local hl: Highlight? = tbl[i]
+                    if hl then
+                        safeCall(function()
+                            hl:Destroy()
+                        end)
+                    end
+                    tbl[i] = nil
+                end
+            end
+
+            -- ESP state
+            local cameraESPEnabled: boolean = false
+            local policeESPEnabled: boolean = false
+            local civilianESPEnabled: boolean = false
+            local keyCardESPEnabled: boolean = false
+            local ropeESPEnabled: boolean = false
+            local hookESPEnabled: boolean = false
+            local codeTableESPEnabled: boolean = false
+
+            local cameraHighlights: {Highlight?} = {}
+            local policeHighlights: {Highlight?} = {}
+            local civilianHighlights: {Highlight?} = {}
+            local keyCardHighlights: {Highlight?} = {}
+            local ropeHighlights: {Highlight?} = {}
+            local hookHighlights: {Highlight?} = {}
+            local codeTableHighlights: {Highlight?} = {}
+
+            local function updateESP()
+                -- Cameras
+                if cameraESPEnabled then
+                    clearHighlights(cameraHighlights)
+                    safeCall(function()
+                        for _, folderName: string in ipairs({ "Cameras", "BrokenCameras" }) do
+                            local folder: Instance? = Workspace:FindFirstChild(folderName)
+                            if folder then
+                                for _, cam: Instance in ipairs(folder:GetChildren()) do
+                                    local color: Color3 = (folderName == "BrokenCameras")
+                                        and Color3.fromRGB(255, 165, 0)
+                                        or Color3.fromRGB(255, 0, 0)
+                                    local hl: Highlight? = createHighlight(cam, color)
+                                    if hl then table.insert(cameraHighlights, hl) end
+                                end
+                            end
+                        end
+                    end)
+                else clearHighlights(cameraHighlights) end
+
+                -- Police / Bodies
+                if policeESPEnabled then
+                    clearHighlights(policeHighlights)
+                    safeCall(function()
+                        for _, folderName: string in ipairs({ "Police", "Bodies" }) do
+                            local folder: Instance? = Workspace:FindFirstChild(folderName)
+                            if folder then
+                                for _, cop: Instance in ipairs(folder:GetChildren()) do
+                                    local hl: Highlight? = createHighlight(cop, Color3.fromRGB(0, 100, 255))
+                                    if hl then table.insert(policeHighlights, hl) end
+                                end
+                            end
+                        end
+                    end)
+                else clearHighlights(policeHighlights) end
+
+                -- Citizens
+                if civilianESPEnabled then
+                    clearHighlights(civilianHighlights)
+                    safeCall(function()
+                        local citizens: Instance? = Workspace:FindFirstChild("Citizens")
+                        if citizens then
+                            for _, citizen: Instance in ipairs(citizens:GetChildren()) do
+                                local isTied: number? = citizen.Name:lower():find("tied")
+                                local color: Color3 = isTied and Color3.fromRGB(255, 255, 0) or Color3.fromRGB(0, 255, 0)
+                                local hl: Highlight? = createHighlight(citizen, color)
+                                if hl then table.insert(civilianHighlights, hl) end
+                            end
+                        end
+                    end)
+                else clearHighlights(civilianHighlights) end
+
+                -- KeyCards
+                if keyCardESPEnabled then
+                    clearHighlights(keyCardHighlights)
+                    safeCall(function()
+                        local map: Instance? = Workspace:FindFirstChild("Map")
+                        if map then
+                            local keyCardFolder: Instance? = map:FindFirstChild("KeyCard")
+                            if keyCardFolder then
+                                local keyCard: Instance? = keyCardFolder:FindFirstChild("KeyCard")
+                                if keyCard then
+                                    local hl: Highlight? = createHighlight(keyCard, Color3.fromRGB(255, 215, 0))
+                                    if hl then table.insert(keyCardHighlights, hl) end
+                                end
+                            end
+                        end
+                    end)
+                else clearHighlights(keyCardHighlights) end
+
+                -- Ozela: Ropes
+                if ropeESPEnabled then
+                    clearHighlights(ropeHighlights)
+                    safeCall(function()
+                        local mapEntities: Instance? = Workspace:FindFirstChild("mapEntities")
+                        if mapEntities then
+                            local missionItems: Instance? = mapEntities:FindFirstChild("missionItems")
+                            if missionItems then
+                                local ropes: Instance? = missionItems:FindFirstChild("Ropes")
+                                if ropes then
+                                    for _, rope: Instance in ipairs(ropes:GetChildren()) do
+                                        local hl: Highlight? = createHighlight(rope, Color3.fromRGB(255, 255, 0))
+                                        if hl then table.insert(ropeHighlights, hl) end
+                                    end
+                                end
+                            end
+                        end
+                    end)
+                else clearHighlights(ropeHighlights) end
+
+                -- Ozela: Hooks
+                if hookESPEnabled then
+                    clearHighlights(hookHighlights)
+                    safeCall(function()
+                        local mapEntities: Instance? = Workspace:FindFirstChild("mapEntities")
+                        if mapEntities then
+                            local missionItems: Instance? = mapEntities:FindFirstChild("missionItems")
+                            if missionItems then
+                                local hooks: Instance? = missionItems:FindFirstChild("Hooks")
+                                if hooks then
+                                    for _, hook: Instance in ipairs(hooks:GetChildren()) do
+                                        local hl: Highlight? = createHighlight(hook, Color3.fromRGB(0, 255, 100))
+                                        if hl then table.insert(hookHighlights, hl) end
+                                    end
+                                end
+                            end
+                        end
+                    end)
+                else clearHighlights(hookHighlights) end
+
+                -- Ozela: Code Table
+                if codeTableESPEnabled then
+                    clearHighlights(codeTableHighlights)
+                    safeCall(function()
+                        local blueprints: Instance? = Workspace:FindFirstChild("Blueprints")
+                        if blueprints then
+                            local stadiumBlueprint: Instance? = blueprints:FindFirstChild("prop_stadium_blueprintTableRNG")
+                            if stadiumBlueprint then
+                                local codeTable: Instance? = stadiumBlueprint:FindFirstChild("prop_office_TablePlastic")
+                                if codeTable then
+                                    local hl: Highlight? = createHighlight(codeTable, Color3.fromRGB(200, 0, 255))
+                                    if hl then table.insert(codeTableHighlights, hl) end
+                                end
+                            end
+                        end
+                    end)
+                else clearHighlights(codeTableHighlights) end
+            end
+
+            -- BringGuards / Kill All state
+            local bringGuardsEnabled: boolean = false
+            local guardStackDistance: number = 10
+            local guardFacingMode: string = "Face You"
+
+            local function bringGuardsStep()
+                if not bringGuardsEnabled then return end
+
+                local localPlayer: Player? = Players.LocalPlayer
+                if not localPlayer then return end
+
+                local character: Model? = localPlayer.Character
+                if not character then return end
+
+                local hrp: BasePart? = character:FindFirstChild("HumanoidRootPart") :: BasePart?
+                if not hrp then return end
+
+                local baseStackCFrame: CFrame = hrp.CFrame * CFrame.new(0, 0, -guardStackDistance)
+
+                for _, folderName: string in ipairs({ "Police", "Bodies" }) do
+                    local folder: Instance? = Workspace:FindFirstChild(folderName)
+                    if folder then
+                        for _, npc: Instance in ipairs(folder:GetChildren()) do
+                            local npcHrp: BasePart? = npc:FindFirstChild("HumanoidRootPart") :: BasePart?
+                            local humanoid: Humanoid? = npc:FindFirstChildOfClass("Humanoid")
+
+                            if npcHrp and humanoid and humanoid.Health > 0 then
+                                local stackPos: Vector3 = baseStackCFrame.Position
+                                local toPlayer: CFrame = CFrame.new(stackPos, hrp.Position)
+                                if guardFacingMode == "Back To You" then
+                                    toPlayer = toPlayer * CFrame.Angles(0, math.rad(180), 0)
+                                end
+
+                                npcHrp.CFrame = toPlayer
+                                npcHrp.Anchored = true
+                            end
+                        end
+                    end
+                end
+            end
+
+            local channelId: string = ...
+            local channel: any = get_comm_channel(channelId)
+
+            channel.Event:Connect(function(msgType: string, ...: any)
+                local args: {any} = { ... }
+
+                if msgType == "SetCameraESP" then cameraESPEnabled = not not args[1]
+                elseif msgType == "SetPoliceESP" then policeESPEnabled = not not args[1]
+                elseif msgType == "SetCivilianESP" then civilianESPEnabled = not not args[1]
+                elseif msgType == "SetKeyCardESP" then keyCardESPEnabled = not not args[1]
+                elseif msgType == "SetRopeESP" then ropeESPEnabled = not not args[1]
+                elseif msgType == "SetHookESP" then hookESPEnabled = not not args[1]
+                elseif msgType == "SetCodeTableESP" then codeTableESPEnabled = not not args[1]
+                elseif msgType == "SetBringGuards" then
+                    bringGuardsEnabled = not not args[1]
+                    if typeof(args[2]) == "number" then guardStackDistance = math.clamp(args[2], 1, 10) end
+                    if typeof(args[3]) == "string" then guardFacingMode = args[3] end
+                end
+            end)
+
+            task.spawn(function()
+                while true do
+                    safeCall(updateESP)
+                    task.wait(2)
+                end
+            end)
+
+            task.spawn(function()
+                while true do
+                    safeCall(bringGuardsStep)
+                    task.wait(0.1)
+                end
+            end)
+        ]], id)
+    end)
+
+    if not okActor then
+        warn("[SocrateS] Actor API failed to initialize: " .. tostring(errActor))
+        ActorWorker.use = false
+    end
+else
+    warn("[SocrateS] Actor API not available – using Task Scheduler fallbacks.")
+end
+
+local function sendToWorker(msgType: string, ...: any)
+    if ActorWorker.use and ActorWorker.channel then
+        ActorWorker.channel:Fire(msgType, ...)
+    end
+end
+
+local function spawnWorker(fn: () -> ())
+    task.spawn(fn)
+end
+
+-- ==================== WINDOW CREATION ====================
+local Window = Library:CreateWindow({
+    Title = "SocrateS - Notoriety v4.9",
+    Footer = "by 29 :)  •  Obsidian UI",
+    Center = true,
+    AutoShow = true,
+    Resizable = true,
+    ShowCustomCursor = true,
+    NotifySide = "Right",
+    ToggleKeybind = Enum.KeyCode.RightShift,
+})
+
+-- Attach addons
+ThemeManager:SetLibrary(Library)
+SaveManager:SetLibrary(Library)
+SaveManager:IgnoreThemeSettings()
+SaveManager:SetFolder("SocrateS/Notoriety")
+SaveManager:SetSubFolder(tostring(game.PlaceId or "Global"))
+
+-- ==================== VARIABLES ====================
+local selectedGun: string = "M16"
+local selectedClass: string = "Class 1"
+
+type WeaponBuffSettings = {
+    Damage: number,
+    FireRate: number,
+    Magazine: number,
+    Ammo: number,
+    Reload: number,
+    Accuracy: number
+}
+
+local WeaponBuffSettings: WeaponBuffSettings = {
+    Damage   = 3,
+    FireRate = 2,
+    Magazine = 2,
+    Ammo     = 2,
+    Reload   = 2,
+    Accuracy = 1.5,
+}
+
+local buffEquippedOnly: boolean = true
+
+-- Interact
+local instantInteractEnabled: boolean = false
+local instantInteractConnection: RBXScriptConnection? = nil
+
+local autoHoldM1Enabled: boolean = false
+local autoHoldM1Loop: RBXScriptConnection? = nil
+local autoHoldM1Holding: boolean = false
+
+-- Fast Interact
+local fastInteractEnabled: boolean = false
+local fastInteract_UseFireProx: boolean = false
+local fastInteract_UsePromptEvents: boolean = false
+local fastInteract_UseKeyPress: boolean = false
+local fastInteractLastRun: number = 0
+local fastInteractPrompts: {[ProximityPrompt]: boolean} = {}
+
+-- Auto Ammo
+local autoAmmoEnabled: boolean = false
+local autoAmmoLoop: RBXScriptConnection? = nil
+
+-- Player Mod
+local infiniteStaminaEnabled: boolean = false
+local infiniteStaminaLoop: RBXScriptConnection? = nil
+
+local walkSpeedEnabled: boolean = false
+local walkSpeedValue: number = 50
+local tpWalkConnection: RBXScriptConnection? = nil
+
+local infiniteJumpEnabled: boolean = false
+local infJumpConnection: RBXScriptConnection? = nil
+
+local noclipEnabled: boolean = false
+local noclipLoop: RBXScriptConnection? = nil
+local noclipParts: {[BasePart]: boolean} = {}
+
+local gravityValue: number = 196.2
+local customGravityEnabled: boolean = false
+local gravityLoop: RBXScriptConnection? = nil
+
+local undetectedEnabled: boolean = false
+
+-- ESP state
+local cameraESPEnabled: boolean = false
+local policeESPEnabled: boolean = false
+local civilianESPEnabled: boolean = false
+local keyCardESPEnabled: boolean = false
+local cameraHighlights: {Highlight?} = {}
+local policeHighlights: {Highlight?} = {}
+local civilianHighlights: {Highlight?} = {}
+local keyCardHighlights: {Highlight?} = {}
+
+-- Map-Specific ESP
+local ropeESPEnabled: boolean = false
+local hookESPEnabled: boolean = false
+local codeTableESPEnabled: boolean = false
+local ropeHighlights: {Highlight?} = {}
+local hookHighlights: {Highlight?} = {}
+local codeTableHighlights: {Highlight?} = {}
+
+-- Ozela Heist Code System
+local codeStatusLabel: any = nil
+local usbStatusLabel: any = nil
+
+-- Aim
+local aimEnabled: boolean = false
+local aimPart: string = "Head"
+local aimFOV: number = 200
+local aimSensitivity: number = 50
+local useSensitivity: boolean = true
+local fovCircleEnabled: boolean = false
+local currentTarget: Model? = nil
+local aiming: boolean = false
+
+-- Bring Guards / Kill All
+local guardStackDistance: number = 10 
+local guardFacingMode: string = "Face You"
+local visualKillAllActive: boolean = false
+
+-- Other
+local autoRefreshUSBEnabled: boolean = false
+local RS_Package: Instance? = nil
+
+local instantGuardSyncEnabled: boolean = false
+local instantGuardSyncConnection: RBXScriptConnection? = nil
+
+type OriginalWeaponEntry = {
+    Damage: number?,
+    FireDelay: number?,
+    MagazineSize: number?,
+    AmmoMax: number?,
+    ReloadTime: number?,
+    LongerReloadTime: number?,
+    Accuracy: number?,
+    [string]: any
+}
+local OriginalWeaponData: {[ModuleScript]: OriginalWeaponEntry} = {}
+
+-- ==================== UTILITY FUNCTIONS ====================
+local function getRS(): Instance?
+    if RS_Package and RS_Package.Parent then return RS_Package end
+
+    local success: boolean, result: Instance? = pcall(function()
+        return ReplicatedStorage:WaitForChild("RS_Package", 5)
+    end)
+
+    if success and result then
+        RS_Package = result
+        return RS_Package
+    end
+
+    return nil
+end
+
+local function notify(title: string, content: string, duration: number?)
+    Library:Notify({
+        Title = title,
+        Description = content,
+        Time = duration or 3,
+    })
+end
+
+local function safeCall(fn: () -> (), errorMsg: string?): boolean
+    local ok2: boolean, err: string = pcall(fn)
+    if not ok2 and errorMsg then
+        warn(("[SocrateS] %s: %s"):format(errorMsg, tostring(err)))
+    end
+    return ok2
+end
+
+local function createHighlightMain(object: Instance, color: Color3): Highlight?
+    if not object or not object:IsDescendantOf(Workspace) then return nil end
+
+    local highlight: Highlight = Instance.new("Highlight")
+    highlight.FillColor = color
+    highlight.OutlineColor = color
+    highlight.FillTransparency = 0.4
+    highlight.OutlineTransparency = 0
+    highlight.Adornee = object
+    highlight.Parent = object
+
+    return highlight
+end
+
+local function clearHighlightsMain(tbl: {Highlight?})
+    for i = #tbl, 1, -1 do
+        local hl: Highlight? = tbl[i]
+        if hl then
+            safeCall(function() hl:Destroy() end)
+        end
+        tbl[i] = nil
+    end
+end
+
+-- ==================== FAST INTERACT PROMPT TRACKING ====================
+local function trackFastInteractPrompt(obj: Instance)
+    if not (obj and obj:IsA("ProximityPrompt")) then return end
+    fastInteractPrompts[obj] = true
+
+    obj.AncestryChanged:Connect(function(_, parent)
+        if not parent then
+            fastInteractPrompts[obj] = nil
+        end
+    end)
+end
+
+for _, obj: Instance in ipairs(Workspace:GetDescendants()) do
+    if obj:IsA("ProximityPrompt") then trackFastInteractPrompt(obj) end
+end
+
+Workspace.DescendantAdded:Connect(function(obj: Instance)
+    if obj:IsA("ProximityPrompt") then trackFastInteractPrompt(obj) end
+end)
+
+-- ==================== GUARD STEP ====================
+local function bringGuardsStepLocal()
+    if not visualKillAllActive then return end
+
+    local character: Model? = LocalPlayer.Character
+    if not character then return end
+
+    local hrp: BasePart? = character:FindFirstChild("HumanoidRootPart") :: BasePart?
+    if not hrp then return end
+
+    local baseStackCFrame: CFrame = hrp.CFrame * CFrame.new(0, 0, -guardStackDistance)
+
+    for _, folderName: string in ipairs({ "Police", "Bodies" }) do
+        local folder: Instance? = Workspace:FindFirstChild(folderName)
+        if folder then
+            for _, npc: Instance in ipairs(folder:GetChildren()) do
+                if npc:IsA("Model") then
+                    local npcHrp: BasePart? = npc:FindFirstChild("HumanoidRootPart") :: BasePart?
+                    local humanoid: Humanoid? = npc:FindFirstChildOfClass("Humanoid")
+
+                    if npcHrp and humanoid and humanoid.Health > 0 then
+                        local stackPos: Vector3 = baseStackCFrame.Position
+                        local toPlayer: CFrame = CFrame.new(stackPos, hrp.Position)
+                        if guardFacingMode == "Back To You" then
+                            toPlayer = toPlayer * CFrame.Angles(0, math.rad(180), 0)
+                        end
+                        npcHrp.CFrame = toPlayer
+                        npcHrp.Anchored = true
+                    end
+                end
+            end
+        end
+    end
+end
+
+-- ==================== FOV CIRCLE ====================
+local FOVCircle: any
+
+do
+    local okFOV: boolean, obj: any = pcall(function()
+        return Drawing and Drawing.new and Drawing.new("Circle")
+    end)
+
+    if okFOV and obj then
+        FOVCircle = obj
+        FOVCircle.Thickness = 2
+        FOVCircle.NumSides = 100
+        FOVCircle.Radius = aimFOV
+        FOVCircle.Filled = false
+        FOVCircle.Visible = false
+        FOVCircle.Color = Color3.fromRGB(255, 255, 255)
+        FOVCircle.Transparency = 1
+    else
+        FOVCircle = nil
+        warn("[SocrateS] Drawing API not available – FOV circle disabled")
+    end
+end
+
+-- ==================== WEAPON FUNCTIONS ====================
+local function getEquippedWeapon(): Tool?
+    local character: Model? = LocalPlayer.Character
+    if not character then return nil end
+    return character:FindFirstChildOfClass("Tool")
+end
+
+local function getOriginalWeaponEntry(dataModule: ModuleScript, weaponData: { [string]: any }): OriginalWeaponEntry
+    local entry: OriginalWeaponEntry? = OriginalWeaponData[dataModule]
+    if entry then return entry end
+
+    entry = {}
+    local baseKeys: {string} = {
+        "Damage", "FireDelay", "MagazineSize", "AmmoMax",
+        "ReloadTime", "LongerReloadTime", "Accuracy",
+    }
+
+    for _, key: string in ipairs(baseKeys) do
+        local value: any = weaponData[key]
+        if typeof(value) == "number" then entry[key] = value end
+    end
+
+    for key: string, value: any in pairs(weaponData) do
+        if typeof(value) == "number" then
+            local lower: string = string.lower(key)
+            if lower:find("damage") and entry[key] == nil then
+                entry[key] = value
+            end
+        end
+    end
+
+    OriginalWeaponData[dataModule] = entry
+    return entry
+end
+
+local function buffCurrentWeapon()
+    safeCall(function()
+        local criminals: Instance? = Workspace:FindFirstChild("Criminals")
+        if not criminals then
+            notify("Weapon Mod", "Criminals folder not found", 3)
+            return
+        end
+
+        local charFolder: Instance? = criminals:FindFirstChild(LocalPlayer.Name)
+        if not charFolder then
+            notify("Weapon Mod", "You are not in Criminals!", 3)
+            return
+        end
+
+        local function scaleField(tbl: any, key: string, factor: number, minValue: number?, maxValue: number?, orig: any?)
+            local base: number = orig and orig[key] or tbl[key]
+            if typeof(base) == "number" then
+                local new: number = base * factor
+                if minValue or maxValue then
+                    new = math.clamp(new, minValue or -math.huge, maxValue or math.huge)
+                end
+                tbl[key] = new
+            end
+        end
+
+        local ammoNames: {string} = { "Ammo", "StoredAmmo", "ReserveAmmo", "MaxAmmo", "AmmoMax", "TotalAmmo", "CurrentAmmo" }
+        local magNames: {string} = { "MagSize", "Magazine", "Clip", "ClipSize", "CurrentClip" }
+
+        local function scaleIntValuesInGun(root: Instance, factorAmmo: number, factorMag: number)
+            for _, v: Instance in ipairs(root:GetDescendants()) do
+                if v:IsA("IntValue") then
+                    if table.find(ammoNames, v.Name) then
+                        local base: any = v:GetAttribute("SocrateS_OrigAmmo")
+                        if base == nil then
+                            base = v.Value
+                            v:SetAttribute("SocrateS_OrigAmmo", base)
+                        end
+                        local new: number = math.floor(base * factorAmmo)
+                        v.Value = math.clamp(new, 0, 99999)
+                    elseif table.find(magNames, v.Name) then
+                        local base: any = v:GetAttribute("SocrateS_OrigMag")
+                        if base == nil then
+                            base = v.Value
+                            v:SetAttribute("SocrateS_OrigMag", base)
+                        end
+                        local new: number = math.floor(base * factorMag)
+                        v.Value = math.clamp(new, 1, 1000)
+                    end
+                end
+            end
+        end
+
+        local weaponsToBuff: {Instance} = {}
+
+        if buffEquippedOnly then
+            local equipped: Tool? = getEquippedWeapon()
+            if not equipped then
+                notify("Weapon Mod", "No equipped weapon found", 3)
+                return
+            end
+            table.insert(weaponsToBuff, equipped)
+        else
+            weaponsToBuff = charFolder:GetChildren()
+        end
+
+        local buffed: number = 0
+
+        for _, obj: Instance in ipairs(weaponsToBuff) do
+            local dataModule: Instance? = obj:FindFirstChild("Data")
+            if dataModule and dataModule:IsA("ModuleScript") then
+                local weaponData: any = require(dataModule)
+                if typeof(weaponData) == "table" then
+                    local s: WeaponBuffSettings = WeaponBuffSettings
+                    local orig: OriginalWeaponEntry = getOriginalWeaponEntry(dataModule, weaponData)
+
+                    for key: string, base: any in pairs(orig) do
+                        if typeof(base) == "number" then
+                            local lower: string = string.lower(key)
+                            if lower:find("damage") then
+                                local cur: any = weaponData[key]
+                                if typeof(cur) == "number" then
+                                    local new: number = base * s.Damage
+                                    weaponData[key] = math.clamp(new, 1, 10000)
+                                end
+                            end
+                        end
+                    end
+
+                    if typeof(orig.FireDelay) == "number" then
+                        local fireFactor: number = 1 / math.max(s.FireRate, 0.1)
+                        weaponData.FireDelay = math.clamp(orig.FireDelay * fireFactor, 0.03, 1)
+                    end
+
+                    scaleField(weaponData, "MagazineSize", s.Magazine, 1, 1000, orig)
+                    scaleField(weaponData, "AmmoMax",      s.Ammo,     1, 5000, orig)
+
+                    if typeof(orig.ReloadTime) == "number" then
+                        local reloadFactor: number = 1 / math.max(s.Reload, 0.1)
+                        weaponData.ReloadTime = math.clamp(orig.ReloadTime * reloadFactor, 0.1, 10)
+                    end
+
+                    if typeof(orig.LongerReloadTime) == "number" then
+                        local reloadFactor: number = 1 / math.max(s.Reload, 0.1)
+                        weaponData.LongerReloadTime = math.clamp(orig.LongerReloadTime * reloadFactor, 0.1, 10)
+                    end
+
+                    scaleField(weaponData, "Accuracy", s.Accuracy, 0, 100, orig)
+                    scaleIntValuesInGun(obj, s.Ammo, s.Magazine)
+
+                    buffed += 1
+                end
+            end
+        end
+
+        if buffed > 0 then
+            local scope: string = buffEquippedOnly and "equipped weapon" or ("weapon(s): " .. buffed)
+            notify("Weapon Mod", ("Buff applied to %s"):format(scope), 4)
+        else
+            notify("Weapon Mod", "No weapon data modules found to modify", 3)
+        end
+    end, "Error modifying weapon")
+end
+
+local function resetWeaponBuffs()
+    safeCall(function()
+        local resetCount: number = 0
+
+        for dataModule: ModuleScript, orig: OriginalWeaponEntry in pairs(OriginalWeaponData) do
+            if dataModule and dataModule.Parent then
+                local weaponData: any = require(dataModule)
+                if typeof(weaponData) == "table" then
+                    for key: string, base: any in pairs(orig) do
+                        if typeof(base) == "number" then
+                            weaponData[key] = base
+                        end
+                    end
+                    resetCount += 1
+                end
+            end
+        end
+
+        local criminals: Instance? = Workspace:FindFirstChild("Criminals")
+        if criminals then
+            local charFolder: Instance? = criminals:FindFirstChild(LocalPlayer.Name)
+            if charFolder then
+                for _, obj: Instance in ipairs(charFolder:GetChildren()) do
+                    for _, v: Instance in ipairs(obj:GetDescendants()) do
+                        if v:IsA("IntValue") then
+                            local baseAmmo: any = v:GetAttribute("SocrateS_OrigAmmo")
+                            local baseMag: any  = v:GetAttribute("SocrateS_OrigMag")
+                            if baseAmmo ~= nil then v.Value = baseAmmo end
+                            if baseMag ~= nil then v.Value = baseMag end
+                        end
+                    end
+                end
+            end
+        end
+
+        notify("Weapon Mod", ("Weapon stats reset (%d module(s))"):format(resetCount), 4)
+    end, "Error resetting weapon buffs")
+end
+
+-- ==================== AIM FUNCTIONS ====================
+local function getClosestPolice(): Model?
+    local closest: Model? = nil
+    local shortestDistance: number = aimFOV
+
+    for _, folderName: string in ipairs({ "Police", "Bodies" }) do
+        local folder: Instance? = Workspace:FindFirstChild(folderName)
+        if folder then
+            for _, npc: Instance in ipairs(folder:GetChildren()) do
+                if npc:IsA("Model") then
+                    local targetPart: BasePart? = npc:FindFirstChild(aimPart) :: BasePart?
+                    if targetPart then
+                        local humanoid: Humanoid? = npc:FindFirstChildOfClass("Humanoid")
+                        if humanoid and humanoid.Health > 0 then
+                            local screenPos: Vector3, onScreen: boolean = Camera:WorldToViewportPoint(targetPart.Position)
+                            if onScreen then
+                                local mousePos: Vector2 = Vector2.new(Mouse.X, Mouse.Y)
+                                local targetPos: Vector2 = Vector2.new(screenPos.X, screenPos.Y)
+                                local distance: number = (mousePos - targetPos).Magnitude
+                                if distance < shortestDistance then
+                                    closest = npc
+                                    shortestDistance = distance
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    return closest
+end
+
+local function aimAtTarget(target: Model?)
+    if not target then return end
+    local targetPart: BasePart? = target:FindFirstChild(aimPart) :: BasePart?
+    if not targetPart then return end
+
+    local targetPos: Vector3 = targetPart.Position
+    local cameraPos: Vector3 = Camera.CFrame.Position
+
+    if useSensitivity then
+        local lookAt: CFrame = CFrame.new(cameraPos, targetPos)
+        local lerpAmount: number = aimSensitivity / 100
+        Camera.CFrame = Camera.CFrame:Lerp(lookAt, lerpAmount)
+    else
+        Camera.CFrame = CFrame.new(cameraPos, targetPos)
+    end
+end
+
+-- ==================== DESTRUCTION HELPERS ====================
+local function fireHit(tool: Tool, hitPart: BasePart): boolean
+    if not tool or not hitPart then return false end
+
+    return safeCall(function()
+        local rs: Instance? = getRS()
+        if not rs then return end
+
+        local remotes: Instance? = rs:FindFirstChild("Assets") and rs.Assets:FindFirstChild("Remotes")
+        local hitRemote: RemoteEvent? = remotes and remotes:FindFirstChild("HitObject") :: RemoteEvent?
+
+        if hitRemote then
+            local args: {any} = {
+                [1] = tool,
+                [2] = hitPart,
+                [3] = false,
+                [6] = Vector3.new(0, 0, 0),
+                [7] = 90,
+                [9] = hitPart.Position,
+            }
+            hitRemote:FireServer(table.unpack(args, 1, 9))
+        end
+    end, "Error firing HitObject remote")
+end
+
+-- ==================== OZELA HEIST HELPERS ====================
+type BoxCodeInfo = {
+    codes: {{number: number, title: string, isCorrect: boolean}},
+    correctCode: string,
+    correctTitle: string,
+    colorSequence: string,
+    colorBoxName: string
+}
+
+local function detectColorBoxCode(): BoxCodeInfo
+    local result: BoxCodeInfo = {
+        codes = {},
+        correctCode = "",
+        correctTitle = "",
+        colorSequence = "",
+        colorBoxName = "",
+    }
+
+    safeCall(function()
+        local cardReader: Instance? = Workspace:FindFirstChild("prop_stadium_cardReader")
+        if cardReader then
+            local main: Instance? = cardReader:FindFirstChild("main")
+            local serial: Instance? = main and main:FindFirstChild("serial")
+            local surfaceGui: Instance? = serial and serial:FindFirstChild("SurfaceGui")
+            local textLabel: TextLabel? = surfaceGui and surfaceGui:FindFirstChild("TextLabel") :: TextLabel?
+            if textLabel and textLabel.Text ~= "" then
+                result.correctCode = textLabel.Text
+            end
+        end
+
+        local blueprints: Instance? = Workspace:FindFirstChild("Blueprints")
+        if blueprints then
+            local stadiumBlueprint: Instance? = blueprints:FindFirstChild("prop_stadium_blueprintTableRNG")
+            local blueprint: Instance? = stadiumBlueprint and stadiumBlueprint:FindFirstChild("prop_stadium_blueprint")
+            if blueprint then
+                for i = 1, 3 do
+                    local numbered: Instance? = blueprint:FindFirstChild(tostring(i))
+                    local serial: Instance? = numbered and numbered:FindFirstChild("serial")
+                    local surfaceGui: Instance? = serial and serial:FindFirstChild("SurfaceGui")
+                    local textLabel: TextLabel? = surfaceGui and surfaceGui:FindFirstChild("TextLabel") :: TextLabel?
+
+                    if textLabel and textLabel.Text ~= "" then
+                        local codeTitle: string = textLabel.Text
+
+                        if codeTitle == result.correctCode and result.correctCode ~= "" then
+                            result.correctTitle = codeTitle
+                            local colors: Instance? = numbered and numbered:FindFirstChild("colors")
+                            if colors then
+                                local colorParts: {string} = {}
+                                for j = 1, 4 do
+                                    local colorPart: Instance? = colors:FindFirstChild(tostring(j))
+                                    local colorSurface: Instance? = colorPart and colorPart:FindFirstChild("SurfaceGui")
+                                    local colorLabel: TextLabel? = colorSurface and colorSurface:FindFirstChild("TextLabel") :: TextLabel?
+                                    if colorLabel and colorLabel.Text ~= "" then
+                                        table.insert(colorParts, colorLabel.Text)
+                                    end
+                                end
+                                result.colorSequence = table.concat(colorParts, " ")
+                            end
+                        end
+
+                        table.insert(result.codes, {
+                            number = i,
+                            title = codeTitle,
+                            isCorrect = (codeTitle == result.correctCode and result.correctCode ~= ""),
+                        })
+                    end
+                end
+            end
+        end
+
+        local colorBoxRNG: Instance? = Workspace:FindFirstChild("colorBoxRNG")
+        if colorBoxRNG and result.correctTitle ~= "" then
+            for _, colorBox: Instance in ipairs(colorBoxRNG:GetChildren()) do
+                local serial: Instance? = colorBox:FindFirstChild("serial")
+                local surfaceGui: Instance? = serial and serial:FindFirstChild("SurfaceGui")
+                local textLabel: TextLabel? = surfaceGui and surfaceGui:FindFirstChild("TextLabel") :: TextLabel?
+                if textLabel and textLabel.Text == result.correctTitle then
+                    result.colorBoxName = colorBox.Name
+                    break
+                end
+            end
+        end
+    end, "Error detecting color box code")
+
+    return result
+end
+
+local function getUSBComputerStatus(): string
+    local status: string = "Not found"
+    safeCall(function()
+        local usbComputer: Instance? = Workspace:FindFirstChild("UsedUSBComputer")
+        local screen: Instance? = usbComputer and usbComputer:FindFirstChild("Screen")
+        local surfaceGui: Instance? = screen and screen:FindFirstChild("SurfaceGui")
+        local textLabel: TextLabel? = surfaceGui and surfaceGui:FindFirstChild("TextLabel") :: TextLabel?
+        if textLabel and textLabel.Text ~= "" then
+            status = textLabel.Text
+        end
+    end, "Error getting USB status")
+    return status
+end
+
+local function updateColorBoxStatus(): BoxCodeInfo?
+    if not codeStatusLabel then return nil end
+
+    local info: BoxCodeInfo = detectColorBoxCode()
+    local codeText: string = "Color Box Code Detection:\n\n"
+
+    if #info.codes > 0 then
+        codeText = codeText .. "Codes:\n"
+        for _, code in ipairs(info.codes) do
+            local marker: string = code.isCorrect and "[OK]" or "[X]"
+            codeText = codeText .. string.format("  %s #%d: %s\n", marker, code.number, code.title)
+        end
+        codeText = codeText .. "\n"
+    else
+        codeText = codeText .. "No codes detected\n\n"
+    end
+
+    if info.correctCode ~= "" then
+        codeText = codeText .. "Correct Code: " .. info.correctCode .. "\n"
+    else
+        codeText = codeText .. "Correct code not found\n"
+    end
+
+    if info.colorSequence ~= "" then
+        codeText = codeText .. "Colors: " .. info.colorSequence .. "\n"
+    end
+
+    if info.colorBoxName ~= "" then
+        codeText = codeText .. "Box: " .. info.colorBoxName
+    end
+
+    codeStatusLabel:SetText(codeText)
+    return info
+end
+
+local function updateUSBStatus()
+    if not usbStatusLabel then return end
+    local status: string = getUSBComputerStatus()
+    usbStatusLabel:SetText("USB Computer Code:\n\n" .. status)
+end
+
+-- ==================== FAST INTERACT STEP ====================
+local function fastInteractStep()
+    if not fastInteractEnabled then return end
+    if not (fastInteract_UseFireProx or fastInteract_UsePromptEvents or fastInteract_UseKeyPress) then
+        return
+    end
+
+    local now: number = os.clock()
+    if now - fastInteractLastRun < 0.15 then return end
+    fastInteractLastRun = now
+
+    local character: Model? = LocalPlayer.Character
+    local hrp: BasePart? = character and character:FindFirstChild("HumanoidRootPart") :: BasePart?
+    if not hrp then return end
+
+    for prompt: ProximityPrompt in pairs(fastInteractPrompts) do
+        if prompt and prompt.Parent and prompt.Enabled and prompt.MaxActivationDistance > 0 then
+            local targetPart: BasePart?
+
+            if prompt.Adornee and prompt.Adornee:IsA("BasePart") then
+                targetPart = prompt.Adornee
+            else
+                local parent: Instance? = prompt.Parent
+                if parent and parent:IsA("BasePart") then
+                    targetPart = parent
+                elseif parent then
+                    targetPart = parent:FindFirstChildWhichIsA("BasePart", true)
+                end
+            end
+
+            if targetPart then
+                local dist: number = (hrp.Position - targetPart.Position).Magnitude
+                if dist <= (prompt.MaxActivationDistance + 3) then
+                    if fastInteract_UseFireProx and typeof(fireproximityprompt) == "function" then
+                        pcall(function() fireproximityprompt(prompt, math.huge) end)
+                    end
+
+                    if fastInteract_UsePromptEvents then
+                        pcall(function()
+                            prompt:InputHoldBegin()
+                            task.delay(0.05, function()
+                                if prompt.Parent and prompt.Enabled then
+                                    pcall(function() prompt:InputHoldEnd() end)
+                                end
+                            end)
+                        end)
+                    end
+
+                    if fastInteract_UseKeyPress and VirtualInputManager then
+                        local key: Enum.KeyCode = prompt.KeyboardKeyCode ~= Enum.KeyCode.Unknown and prompt.KeyboardKeyCode or Enum.KeyCode.E
+                        pcall(function()
+                            VirtualInputManager:SendKeyEvent(true, key, false, game)
+                            task.delay(0.05, function()
+                                VirtualInputManager:SendKeyEvent(false, key, false, game)
+                            end)
+                        end)
+                    end
+                end
+            end
+        end
+    end
+end
+
+-- ==================== TABS ====================
+local Tabs = {
+    Weapons = Window:AddTab("Weapons", "target"),
+    Interact = Window:AddTab("Interactions", "hand"),
+    Teleports = Window:AddTab("Teleports", "navigation"),
+    Destruction = Window:AddTab("Destruction", "bomb"),
+    Player = Window:AddTab("Player Mod", "user"),
+    Combat = Window:AddTab("Combat", "crosshair"),
+    ESP = Window:AddTab("ESP", "eye"),
+    Maps = Window:AddTab("Specific Maps", "map"),
+    Stats = Window:AddTab("Game Stats", "bar-chart"),
+    Changelog = Window:AddTab("Changelogs", "file-text"),
+    Debug = Window:AddTab("Debug", "bug"),["UI Settings"] = Window:AddTab("UI Settings", "settings"),
+}
+
+-- ==================== UI SETTINGS TAB ====================
+do
+    local uiTab = Tabs["UI Settings"]
+
+    ThemeManager:SetFolder("SocrateSThemes")
+    ThemeManager:ApplyToTab(uiTab)
+    ThemeManager:LoadDefault()
+
+    SaveManager:SetIgnoreIndexes({ "MenuKeybind", "InstantGuardSync" })
+    SaveManager:BuildConfigSection(uiTab)
+    SaveManager:LoadAutoloadConfig()
+
+    task.defer(function()
+        if Options.WPN_DamageMult then WeaponBuffSettings.Damage = Options.WPN_DamageMult.Value end
+        if Options.WPN_FireRateMult then WeaponBuffSettings.FireRate = Options.WPN_FireRateMult.Value end
+        if Options.WPN_MagMult then WeaponBuffSettings.Magazine = Options.WPN_MagMult.Value end
+        if Options.WPN_AmmoMult then WeaponBuffSettings.Ammo = Options.WPN_AmmoMult.Value end
+        if Options.WPN_ReloadMult then WeaponBuffSettings.Reload = Options.WPN_ReloadMult.Value end
+        if Options.WPN_AccuracyMult then WeaponBuffSettings.Accuracy = Options.WPN_AccuracyMult.Value end
+        if Toggles.WPN_EquippedOnly then buffEquippedOnly = Toggles.WPN_EquippedOnly.Value end
+        if Options.GunName then selectedGun = Options.GunName.Value end
+        if Options.ClassName then selectedClass = Options.ClassName.Value end
+        if Options.WalkSpeed then walkSpeedValue = Options.WalkSpeed.Value end
+        if Options.Gravity then gravityValue = Options.Gravity.Value end
+        if Options.AimPart then aimPart = Options.AimPart.Value end
+        if Options.AimFOV then
+            aimFOV = Options.AimFOV.Value
+            if FOVCircle then FOVCircle.Radius = aimFOV end
+        end
+        if Options.AimSensitivity then aimSensitivity = Options.AimSensitivity.Value end
+        if Toggles.UseSensitivity then useSensitivity = Toggles.UseSensitivity.Value end
+        if Options.GuardStackDistance then guardStackDistance = Options.GuardStackDistance.Value end
+        if Options.GuardFacingMode then guardFacingMode = Options.GuardFacingMode.Value end
+    end)
+
+    local MenuGroup = uiTab:AddLeftGroupbox("Menu", "keyboard")
+    
+    -- Reverted 'true' back to 'false' and removed the newline so AddKeyPicker works again
+    local menuLabel = MenuGroup:AddLabel("Menu bind", false) 
+    menuLabel:AddKeyPicker("MenuKeybind", {
+        Default = "RightShift",
+        NoUI = false,
+        Text = "Menu keybind",
+    })
+
+    spawnWorker(function()
+        task.wait(0.1)
+        if Options.MenuKeybind then
+            Library.ToggleKeybind = Options.MenuKeybind
+        end
+    end)
+end
+
+-- ==================== CHANGELOG TAB ====================
+do
+    local Left = Tabs.Changelog:AddLeftGroupbox("Versions", "file-text")
+
+    Left:AddLabel("v4.9 – Optimization & OTH Integration", true)
+    Left:AddLabel(
+        "• Added robust Luau typechecking across the entire script.\n" ..
+        "• Integrated Madium OTH & Actor API support.\n" ..
+        "• Removed Automation tab (deprecated).\n" ..
+        "• Improved UI text alignment and formatting.",
+        true
+    )
+
+    Left:AddLabel("v4.8 – Automation (Bags) + QoL", true)
+    Left:AddLabel(
+        "• Auto Hold (M1) re-presses after manual click.\n" ..
+        "• Fast Interact alt modes (in Debug).",
+        true
+    )
+
+    Left:AddLabel("v4.6 – Debug + Interact QoL", true)
+    Left:AddLabel(
+        "• Debug tab: Instant Guard Sync.\n" ..
+        "• Interact: Auto Hold (M1) for current gun.\n" ..
+        "• Cleaner toggle labels, better text density.",
+        true
+    )
+
+    local Right = Tabs.Changelog:AddRightGroupbox("About", "info")
+    Right:AddLabel(
+        "SocrateS Hub\n\n" ..
+        "Original by: 29 :)\n\n" ..
+        "QoL features for Notoriety.\n" ..
+        "If you find bugs, report them.", 
+        true
+    )
+end
+
+-- ==================== WEAPONS TAB ====================
+do
+    local Mods = Tabs.Weapons:AddLeftGroupbox("Weapon Buff", "crosshair")
+
+    Mods:AddLabel(
+        "Tune buff strength.\n" ..
+        "If hits stop registering, lower Fire Rate & Reload.\n" ..
+        "Buffs are non-stacking and can be reset.",
+        true
+    )
+
+    Mods:AddSlider("WPN_DamageMult", {
+        Text = "Damage x", Default = WeaponBuffSettings.Damage, Min = 1, Max = 10, Rounding = 1,
+        Tooltip = "Damage multiplier (1–10)", Callback = function(v) WeaponBuffSettings.Damage = v end,
+    })
+
+    Mods:AddSlider("WPN_FireRateMult", {
+        Text = "Fire Rate x", Default = WeaponBuffSettings.FireRate, Min = 1, Max = 5, Rounding = 1,
+        Tooltip = "Shots per second boost (1–5)", Callback = function(v) WeaponBuffSettings.FireRate = v end,
+    })
+
+    Mods:AddSlider("WPN_MagMult", {
+        Text = "Magazine x", Default = WeaponBuffSettings.Magazine, Min = 1, Max = 5, Rounding = 1,
+        Tooltip = "Mag size multiplier (1–5)", Callback = function(v) WeaponBuffSettings.Magazine = v end,
+    })
+
+    Mods:AddSlider("WPN_AmmoMult", {
+        Text = "Total Ammo x", Default = WeaponBuffSettings.Ammo, Min = 1, Max = 5, Rounding = 1,
+        Tooltip = "Reserve / total ammo multiplier (1–5)", Callback = function(v) WeaponBuffSettings.Ammo = v end,
+    })
+
+    Mods:AddSlider("WPN_ReloadMult", {
+        Text = "Reload Speed x", Default = WeaponBuffSettings.Reload, Min = 1, Max = 5, Rounding = 1,
+        Tooltip = "Reload speed multiplier (1–5)", Callback = function(v) WeaponBuffSettings.Reload = v end,
+    })
+
+    Mods:AddSlider("WPN_AccuracyMult", {
+        Text = "Accuracy x", Default = WeaponBuffSettings.Accuracy, Min = 1, Max = 3, Rounding = 1,
+        Tooltip = "Accuracy multiplier (1–3)", Callback = function(v) WeaponBuffSettings.Accuracy = v end,
+    })
+
+    Mods:AddToggle("WPN_EquippedOnly", {
+        Text = "Buff Only Equipped Weapon", Default = buffEquippedOnly,
+        Tooltip = "Safer to keep this ON", Callback = function(v) buffEquippedOnly = v end,
+    })
+
+    Mods:AddButton({ Text = "Apply Weapon Buff", Tooltip = "Apply current buff settings", Func = buffCurrentWeapon })
+    Mods:AddButton({ Text = "Reset Weapon Buffs", Tooltip = "Restore original weapon stats", Func = resetWeaponBuffs })
+
+    local Loadout = Tabs.Weapons:AddRightGroupbox("Loadouts", "archive")
+
+    Loadout:AddLabel("Manage class guns, then buff the one you use.", true)
+
+    Loadout:AddInput("GunName", {
+        Text = "Weapon Name", Default = "M16", Placeholder = "Ex: M16, AK47, Shotgun",
+        Numeric = false, Finished = false, ClearTextOnFocus = false, Callback = function(v) selectedGun = v end,
+    })
+
+    Loadout:AddInput("ClassName", {
+        Text = "Class Name", Default = "Class 1", Placeholder = "Ex: Class 1, Class 2",
+        Numeric = false, Finished = false, ClearTextOnFocus = false, Callback = function(v) selectedClass = v end,
+    })
+
+    Loadout:AddButton({
+        Text = "Get Weapon Data",
+        Tooltip = "Fetch weapon data from server",
+        Func = function()
+            safeCall(function()
+                local rs: Instance? = getRS()
+                local remotes: Instance? = rs and rs:FindFirstChild("Remotes")
+                local getGunData: RemoteFunction? = remotes and remotes:FindFirstChild("GetGunData") :: RemoteFunction?
+                if getGunData then
+                    getGunData:InvokeServer(selectedGun)
+                    notify("Weapons", "Data obtained: " .. selectedGun, 3)
+                else notify("Weapons", "GetGunData remote not found", 3) end
+            end, "Error getting weapon data")
+        end,
+    })
+
+    Loadout:AddButton({
+        Text = "Set Weapon to Class",
+        Tooltip = "Assign weapon to selected class",
+        Func = function()
+            safeCall(function()
+                local rs: Instance? = getRS()
+                local remotes: Instance? = rs and rs:FindFirstChild("Remotes")
+                local setGun: RemoteEvent? = remotes and remotes:FindFirstChild("SetGunForClass") :: RemoteEvent?
+                if setGun then
+                    setGun:FireServer(selectedClass, selectedGun, 0)
+                    notify("Weapons", selectedGun .. " -> " .. selectedClass, 3)
+                else notify("Weapons", "SetGunForClass remote not found", 3) end
+            end, "Error setting weapon")
+        end,
+    })
+
+    Loadout:AddButton({
+        Text = "Activate Class",
+        Tooltip = "Equip selected class",
+        Func = function()
+            safeCall(function()
+                local rs: Instance? = getRS()
+                local remotes: Instance? = rs and rs:FindFirstChild("Remotes")
+                local setClass: RemoteEvent? = remotes and remotes:FindFirstChild("SetClass") :: RemoteEvent?
+                if setClass then
+                    setClass:FireServer(selectedClass)
+                    notify("Weapons", "Class activated: " .. selectedClass, 3)
+                else notify("Weapons", "SetClass remote not found", 3) end
+            end, "Error activating class")
+        end,
+    })
+end
+
+-- ==================== INTERACT TAB ====================
+do
+    local Quick = Tabs.Interact:AddLeftGroupbox("Quick Interactions", "zap")
+
+    Quick:AddToggle("InstantInteract", {
+        Text = "Instant Interact", Default = false,
+        Tooltip = "Removes hold time on all prompts",
+        Callback = function(value: boolean)
+            instantInteractEnabled = value
+            if instantInteractConnection then
+                instantInteractConnection:Disconnect()
+                instantInteractConnection = nil
+            end
+
+            if value then
+                safeCall(function()
+                    for _, obj: Instance in ipairs(Workspace:GetDescendants()) do
+                        if obj:IsA("ProximityPrompt") then
+                            obj.HoldDuration = 0
+                            obj.MaxActivationDistance = 20
+                            obj.RequiresLineOfSight = false
+                        end
+                    end
+                end)
+
+                instantInteractConnection = Workspace.DescendantAdded:Connect(function(obj: Instance)
+                    if instantInteractEnabled and obj:IsA("ProximityPrompt") then
+                        task.wait()
+                        obj.HoldDuration = 0
+                        obj.MaxActivationDistance = 20
+                        obj.RequiresLineOfSight = false
+                    end
+                end)
+                notify("Interact", "Instant Interact ENABLED", 2)
+            else notify("Interact", "Instant Interact disabled", 2) end
+        end,
+    })
+
+    Quick:AddButton({
+        Text = "Apply Instant Interact Now",
+        Tooltip = "Force apply to all prompts currently loaded",
+        Func = function()
+            local count: number = 0
+            safeCall(function()
+                for _, obj: Instance in ipairs(Workspace:GetDescendants()) do
+                    if obj:IsA("ProximityPrompt") then
+                        obj.HoldDuration = 0
+                        obj.MaxActivationDistance = 20
+                        obj.RequiresLineOfSight = false
+                        count += 1
+                    end
+                end
+            end)
+            notify("Interact", ("Modified %d prompts"):format(count), 3)
+        end,
+    })
+
+    Quick:AddToggle("AutoHoldM1", {
+        Text = "Auto Hold (M1)", Default = false,
+        Tooltip = "Automatically holds left click for your current gun (VIM auto-repress)",
+        Callback = function(value: boolean)
+            autoHoldM1Enabled = value
+
+            if autoHoldM1Loop then
+                autoHoldM1Loop:Disconnect()
+                autoHoldM1Loop = nil
+            end
+
+            if not VirtualInputManager then
+                notify("Interact", "VirtualInputManager not available – Auto Hold disabled", 3)
+                autoHoldM1Enabled = false
+                return
+            end
+
+            if value then
+                autoHoldM1Loop = RunService.Heartbeat:Connect(function()
+                    safeCall(function()
+                        local tool: Tool? = getTool()
+                        if autoHoldM1Enabled and tool and not autoHoldM1Holding then
+                            autoHoldM1Holding = true
+                            local mousePos: Vector2 = UserInputService:GetMouseLocation()
+                            pcall(function() VirtualInputManager:SendMouseButtonEvent(mousePos.X, mousePos.Y, 0, true, game, 1) end)
+                        elseif (not autoHoldM1Enabled or not tool) and autoHoldM1Holding then
+                            autoHoldM1Holding = false
+                            local mousePos: Vector2 = UserInputService:GetMouseLocation()
+                            pcall(function() VirtualInputManager:SendMouseButtonEvent(mousePos.X, mousePos.Y, 0, false, game, 1) end)
+                        end
+                    end, "Error running Auto Hold (M1)")
+                end)
+                notify("Interact", "Auto Hold (M1) enabled", 2)
+            else
+                if autoHoldM1Holding and VirtualInputManager then
+                    autoHoldM1Holding = false
+                    local mousePos: Vector2 = UserInputService:GetMouseLocation()
+                    pcall(function() VirtualInputManager:SendMouseButtonEvent(mousePos.X, mousePos.Y, 0, false, game, 1) end)
+                end
+                notify("Interact", "Auto Hold (M1) disabled", 2)
+            end
+        end,
+    })
+
+    Quick:AddToggle("AutoAmmo", {
+        Text = "Auto Ammo", Default = false,
+        Tooltip = "Teleports AmmoDrops/AmmoBox/AmmoPart to you (refills even while idle)",
+        Callback = function(value: boolean)
+            autoAmmoEnabled = value
+            if autoAmmoLoop then
+                autoAmmoLoop:Disconnect()
+                autoAmmoLoop = nil
+            end
+
+            if value then
+                autoAmmoLoop = RunService.Heartbeat:Connect(function()
+                    if not autoAmmoEnabled then return end
+                    safeCall(function()
+                        local character: Model? = LocalPlayer.Character
+                        local hrp: BasePart? = character and character:FindFirstChild("HumanoidRootPart") :: BasePart?
+                        local ammoDrops: Instance? = Workspace:FindFirstChild("AmmoDrops")
+                        if not hrp or not ammoDrops then return end
+
+                        local t: number = os.clock()
+                        for i, drop: Instance in ipairs(ammoDrops:GetChildren()) do
+                            if drop:IsA("Model") then
+                                local ammoPart: BasePart? = drop:FindFirstChild("AmmoPart") :: BasePart?
+                                    or drop:FindFirstChildWhichIsA("BasePart", true)
+
+                                if ammoPart then
+                                    local baseY: number = -2
+                                    local radius: number = 1.5
+                                    local angle: number = t * 6 + i
+                                    local heightJitter: number = math.sin(t * 10 + i) * 0.25
+
+                                    local offset: Vector3 = Vector3.new(
+                                        math.cos(angle) * radius,
+                                        baseY + heightJitter,
+                                        math.sin(angle) * radius
+                                    )
+                                    ammoPart.CFrame = hrp.CFrame * CFrame.new(offset.X, offset.Y, offset.Z)
+                                end
+                            end
+                        end
+                    end, "Error running Auto Ammo")
+                end)
+                notify("Interact", "Auto Ammo enabled", 2)
+            else notify("Interact", "Auto Ammo disabled", 2) end
+        end,
+    })
+
+    local NPC = Tabs.Interact:AddRightGroupbox("NPC Actions", "users")
+
+    NPC:AddButton({
+        Text = "Drop Bag on Ground", Tooltip = "Throws the bag you're holding",
+        Func = function()
+            safeCall(function()
+                local rs: Instance? = getRS()
+                local remotes: Instance? = rs and rs:FindFirstChild("Remotes")
+                local throwBag: RemoteEvent? = remotes and remotes:FindFirstChild("ThrowBag") :: RemoteEvent?
+                if throwBag then
+                    throwBag:FireServer(Vector3.new(-0.98, -0.16, 0.07))
+                    notify("Interact", "Bag thrown!", 2)
+                else notify("Interact", "ThrowBag remote not found", 3) end
+            end, "Error throwing bag")
+        end,
+    })
+
+    NPC:AddButton({
+        Text = "Yell at All Civilians", Tooltip = "Intimidates all civilians",
+        Func = function()
+            safeCall(function()
+                local citizens: Instance? = Workspace:FindFirstChild("Citizens")
+                if not citizens then notify("Interact", "No civilians found!", 3); return end
+
+                local targets: {Instance} = {}
+                for _, citizen in ipairs(citizens:GetChildren()) do table.insert(targets, citizen) end
+
+                local rs: Instance? = getRS()
+                local remotes: Instance? = rs and rs:FindFirstChild("Remotes")
+                local playerYell: RemoteEvent? = remotes and remotes:FindFirstChild("PlayerYell") :: RemoteEvent?
+
+                if playerYell then
+                    playerYell:FireServer(targets)
+                    notify("Interact", ("Yelling at %d civilians"):format(#targets), 3)
+                else notify("Interact", "PlayerYell remote not found", 3) end
+            end, "Error yelling at civilians")
+        end,
+    })
+end
+
+-- ==================== TELEPORTS TAB ====================
+do
+    local TP = Tabs.Teleports:AddLeftGroupbox("General Teleports", "navigation")
+
+    TP:AddButton({
+        Text = "Teleport to KeyCard", Tooltip = "Teleport to keycard on any map",
+        Func = function()
+            safeCall(function()
+                local character: Model? = LocalPlayer.Character
+                local hrp: BasePart? = character and character:FindFirstChild("HumanoidRootPart") :: BasePart?
+                if not hrp then notify("Teleport", "Character not found!", 3); return end
+
+                local map: Instance? = Workspace:FindFirstChild("Map")
+                local keyCardFolder: Instance? = map and map:FindFirstChild("KeyCard")
+                local keyCard: Instance? = keyCardFolder and keyCardFolder:FindFirstChild("KeyCard")
+                if not keyCard then notify("Teleport", "KeyCard not spawned!", 3); return end
+
+                local targetPart: BasePart? = keyCard.PrimaryPart or keyCard:FindFirstChildWhichIsA("BasePart", true)
+                if not targetPart then notify("Teleport", "KeyCard has no parts!", 3); return end
+
+                hrp.CFrame = targetPart.CFrame + Vector3.new(0, 5, 0)
+                notify("Teleport", "Teleported to KeyCard!", 2)
+            end, "Error teleporting to KeyCard")
+        end,
+    })
+end
+
+-- ==================== DESTRUCTION TAB ====================
+do
+    local Destruct = Tabs.Destruction:AddLeftGroupbox("Destruction", "bomb")
+
+    Destruct:AddButton({
+        Text = "Break All Glass", Tooltip = "Destroys all glass",
+        Func = function()
+            local tool: Tool? = getTool()
+            if not tool then notify("Destruction", "Hold a weapon!", 3); return end
+
+            local glassFolder: Instance? = Workspace:FindFirstChild("Glass")
+            if not glassFolder then notify("Destruction", "No glass folder found!", 3); return end
+
+            local count: number = 0
+            for _, glass: Instance in ipairs(glassFolder:GetChildren()) do
+                if glass:IsA("BasePart") then
+                    if fireHit(tool, glass) then count += 1 end
+                end
+                if count % 20 == 0 then task.wait(0.05) end
+            end
+            notify("Destruction", ("%d glass parts broken!"):format(count), 4)
+        end,
+    })
+
+    Destruct:AddButton({
+        Text = "Destroy All Cameras", Tooltip = "Breaks active & broken cameras",
+        Func = function()
+            local tool: Tool? = getTool()
+            if not tool then notify("Destruction", "Hold a weapon!", 3); return end
+
+            local count: number = 0
+            for _, folderName: string in ipairs({ "Cameras", "BrokenCameras" }) do
+                local folder: Instance? = Workspace:FindFirstChild(folderName)
+                if folder then
+                    for _, cam: Instance in ipairs(folder:GetChildren()) do
+                        local part: BasePart? = (cam:FindFirstChild("Union") or cam:FindFirstChild("Head") or cam:FindFirstChildOfClass("MeshPart")) :: BasePart?
+                        if part and fireHit(tool, part) then count += 1 end
+                    end
+                end
+            end
+            notify("Destruction", ("%d cameras destroyed!"):format(count), 4)
+        end,
+    })
+end
+
+-- ==================== PLAYER MOD TAB ====================
+do
+    local Move = Tabs.Player:AddLeftGroupbox("Movement", "move")
+    local Physics = Tabs.Player:AddRightGroupbox("Physics & Misc", "activity")
+
+    Move:AddToggle("InfiniteStamina", {
+        Text = "Infinite Stamina", Default = false,
+        Tooltip = "Never get tired",
+        Callback = function(value: boolean)
+            infiniteStaminaEnabled = value
+            if infiniteStaminaLoop then
+                infiniteStaminaLoop:Disconnect()
+                infiniteStaminaLoop = nil
+            end
+
+            if value then
+                infiniteStaminaLoop = RunService.Heartbeat:Connect(function()
+                    safeCall(function()
+                        local criminals: Instance? = Workspace:FindFirstChild("Criminals")
+                        local playerModel: Instance? = criminals and criminals:FindFirstChild(LocalPlayer.Name)
+                        if not playerModel then return end
+
+                        local stamina: NumberValue? = playerModel:FindFirstChild("Stamina") :: NumberValue?
+                        local maxStamina: NumberValue? = playerModel:FindFirstChild("MaxStamina") :: NumberValue?
+
+                        if stamina then stamina.Value = 90000 end
+                        if maxStamina then maxStamina.Value = 90000 end
+                    end)
+                end)
+                notify("Player", "Infinite Stamina enabled", 2)
+            else notify("Player", "Infinite Stamina disabled", 2) end
+        end,
+    })
+
+    Move:AddSlider("WalkSpeed", {
+        Text = "Movement Speed", Default = walkSpeedValue, Min = 16, Max = 200, Rounding = 0,
+        Callback = function(value: number) walkSpeedValue = value end,
+    })
+
+    Move:AddToggle("WalkSpeedToggle", {
+        Text = "TP Walk", Default = false,
+        Tooltip = "Fast movement (safe)",
+        Callback = function(value: boolean)
+            walkSpeedEnabled = value
+            if tpWalkConnection then
+                tpWalkConnection:Disconnect()
+                tpWalkConnection = nil
+            end
+
+            if value then
+                tpWalkConnection = RunService.Heartbeat:Connect(function()
+                    if not walkSpeedEnabled then return end
+                    safeCall(function()
+                        local character: Model? = LocalPlayer.Character
+                        local hrp: BasePart? = character and character:FindFirstChild("HumanoidRootPart") :: BasePart?
+                        local humanoid: Humanoid? = character and character:FindFirstChildOfClass("Humanoid")
+                        if hrp and humanoid and humanoid.MoveDirection.Magnitude > 0 then
+                            local moveSpeed: number = walkSpeedValue / 50
+                            hrp.CFrame = hrp.CFrame + (humanoid.MoveDirection * moveSpeed)
+                        end
+                    end)
+                end)
+                notify("Player", "TP Walk enabled - Speed: " .. walkSpeedValue, 3)
+            else notify("Player", "TP Walk disabled", 2) end
+        end,
+    })
+
+    Move:AddToggle("InfiniteJump", {
+        Text = "Infinite Jump", Default = false, Tooltip = "Jump infinitely in the air",
+        Callback = function(value: boolean)
+            infiniteJumpEnabled = value
+            if infJumpConnection then
+                infJumpConnection:Disconnect()
+                infJumpConnection = nil
+            end
+
+            if value then
+                infJumpConnection = UserInputService.JumpRequest:Connect(function()
+                    if not infiniteJumpEnabled then return end
+                    local character: Model? = LocalPlayer.Character
+                    local humanoid: Humanoid? = character and character:FindFirstChildOfClass("Humanoid")
+                    if humanoid then humanoid:ChangeState(Enum.HumanoidStateType.Jumping) end
+                end)
+                notify("Player", "Infinite Jump enabled", 2)
+            else notify("Player", "Infinite Jump disabled", 2) end
+        end,
+    })
+
+    Physics:AddSlider("Gravity", {
+        Text = "Gravity", Default = gravityValue, Min = 0, Max = 196.2, Rounding = 1,
+        Callback = function(value: number) gravityValue = value end,
+    })
+
+    Physics:AddToggle("GravityToggle", {
+        Text = "Enable Custom Gravity", Default = false, Tooltip = "Applies configured gravity",
+        Callback = function(value: boolean)
+            customGravityEnabled = value
+            if gravityLoop then
+                gravityLoop:Disconnect()
+                gravityLoop = nil
+            end
+
+            if value then
+                gravityLoop = RunService.Heartbeat:Connect(function()
+                    if customGravityEnabled then Workspace.Gravity = gravityValue end
+                end)
+                notify("Player", "Custom gravity: " .. gravityValue, 2)
+            else
+                Workspace.Gravity = 196.2
+                notify("Player", "Gravity reset", 2)
+            end
+        end,
+    })
+
+    Physics:AddToggle("Noclip", {
+        Text = "Noclip", Default = false, Tooltip = "Walk through walls",
+        Callback = function(value: boolean)
+            noclipEnabled = value
+            if noclipLoop then
+                noclipLoop:Disconnect()
+                noclipLoop = nil
+            end
+
+            if value then
+                noclipLoop = RunService.Stepped:Connect(function()
+                    if not noclipEnabled then return end
+                    safeCall(function()
+                        local character: Model? = LocalPlayer.Character
+                        if not character then return end
+                        for _, part: Instance in ipairs(character:GetDescendants()) do
+                            if part:IsA("BasePart") and part.CanCollide then
+                                if noclipParts[part] == nil then noclipParts[part] = part.CanCollide end
+                                part.CanCollide = false
+                            end
+                        end
+                    end)
+                end)
+                notify("Player", "Noclip enabled", 2)
+            else
+                safeCall(function()
+                    for part: BasePart, wasCollide: boolean in pairs(noclipParts) do
+                        if part and part.Parent then part.CanCollide = wasCollide end
+                        noclipParts[part] = nil
+                    end
+                end)
+                notify("Player", "Noclip disabled", 2)
+            end
+        end,
+    })
+
+    Physics:AddToggle("UndetectedBeta", {
+        Text = "Undetected BETA", Default = false,
+        Tooltip = "Enable on starting screen BEFORE heist begins!",
+        Callback = function(value: boolean)
+            undetectedEnabled = value
+            if value then
+                safeCall(function()
+                    local rs: Instance? = getRS()
+                    local assets: Instance? = rs and rs:FindFirstChild("Assets")
+                    local remotes: Instance? = assets and assets:FindFirstChild("Remotes")
+                    local maskEvent: RemoteEvent? = remotes and remotes:FindFirstChild("MaskOn") :: RemoteEvent?
+                    if maskEvent then
+                        maskEvent:FireServer(nil, "Primary")
+                        notify("Undetected", "Mask activated!", 2)
+                    end
+                end, "Error activating undetected mode")
+                notify("Undetected", "Undetected mode enabled! Wait for heist to start.", 4)
+            else notify("Undetected", "Disabled", 2) end
+        end,
+    })
+end
+
+-- ==================== COMBAT TAB ====================
+do
+    local Kill = Tabs.Combat:AddLeftGroupbox("Alternative Kill", "users")
+
+    Kill:AddLabel("Kill Aura & old Kill All are patched.\nThis stacks guards in front of you instead.", true)
+
+    Kill:AddToggle("BringGuards", {
+        Text = "Bring Guards", Default = false,
+        Tooltip = "Brings all guards/bodies in front of you",
+        Callback = function(value: boolean)
+            visualKillAllActive = value
+
+            if value then
+                notify("Bring Guards", "Bringing all guards. Keep it on to auto-update.", 3)
+
+                if instantGuardSyncEnabled then
+                    if instantGuardSyncConnection then instantGuardSyncConnection:Disconnect() end
+                    instantGuardSyncConnection = RunService.RenderStepped:Connect(bringGuardsStepLocal)
+                elseif ActorWorker.use then
+                    sendToWorker("SetBringGuards", true, guardStackDistance, guardFacingMode)
+                else
+                    spawnWorker(function()
+                        while visualKillAllActive do
+                            if instantGuardSyncEnabled then task.wait(0.1); continue end
+
+                            local character: Model? = LocalPlayer.Character
+                            local hrp: BasePart? = character and character:FindFirstChild("HumanoidRootPart") :: BasePart?
+                            if not hrp then task.wait(0.5); continue end
+
+                            local baseStackCFrame: CFrame = hrp.CFrame * CFrame.new(0, 0, -guardStackDistance)
+
+                            for _, folderName: string in ipairs({ "Police", "Bodies" }) do
+                                local folder: Instance? = Workspace:FindFirstChild(folderName)
+                                if folder then
+                                    for _, npc: Instance in ipairs(folder:GetChildren()) do
+                                        if not visualKillAllActive then break end
+                                        if npc:IsA("Model") then
+                                            local npcHrp: BasePart? = npc:FindFirstChild("HumanoidRootPart") :: BasePart?
+                                            local humanoid: Humanoid? = npc:FindFirstChildOfClass("Humanoid")
+
+                                            if npcHrp and humanoid and humanoid.Health > 0 then
+                                                local stackPos: Vector3 = baseStackCFrame.Position
+                                                local toPlayer: CFrame = CFrame.new(stackPos, hrp.Position)
+                                                if guardFacingMode == "Back To You" then
+                                                    toPlayer = toPlayer * CFrame.Angles(0, math.rad(180), 0)
+                                                end
+                                                npcHrp.CFrame = toPlayer
+                                                npcHrp.Anchored = true
+                                            end
+                                        end
+                                    end
+                                end
+                            end
+                            task.wait(0.1)
+                        end
+                    end)
+                end
+            else
+                if instantGuardSyncConnection then
+                    instantGuardSyncConnection:Disconnect()
+                    instantGuardSyncConnection = nil
+                end
+
+                if ActorWorker.use then
+                    sendToWorker("SetBringGuards", false, guardStackDistance, guardFacingMode)
+                end
+
+                for _, folderName: string in ipairs({ "Police", "Bodies" }) do
+                    local folder: Instance? = Workspace:FindFirstChild(folderName)
+                    if folder then
+                        for _, npc: Instance in ipairs(folder:GetChildren()) do
+                            local npcHrp: BasePart? = npc:FindFirstChild("HumanoidRootPart") :: BasePart?
+                            if npcHrp then npcHrp.Anchored = false end
+                        end
+                    end
+                end
+                notify("Bring Guards", "Stopped and released all guards", 3)
+            end
+        end,
+    })
+
+    Kill:AddSlider("GuardStackDistance", {
+        Text = "Guard Distance (studs)", Default = guardStackDistance, Min = 1, Max = 10, Rounding = 0,
+        Tooltip = "How far in front of you guards are stacked (1–10).",
+        Callback = function(value: number)
+            guardStackDistance = value
+            if ActorWorker.use and visualKillAllActive then
+                sendToWorker("SetBringGuards", true, guardStackDistance, guardFacingMode)
+            end
+        end,
+    })
+
+    Kill:AddDropdown("GuardFacingMode", {
+        Values = { "Face You", "Back To You" }, Default = 1, Multi = false,
+        Text = "Guard Facing", Tooltip = "Face you (default) or show backs to avoid shields.",
+        Callback = function(value: string)
+            guardFacingMode = value
+            if ActorWorker.use and visualKillAllActive then
+                sendToWorker("SetBringGuards", true, guardStackDistance, guardFacingMode)
+            end
+        end,
+    })
+
+    local AimBox = Tabs.Combat:AddRightGroupbox("Aimbot", "crosshair")
+
+    AimBox:AddToggle("AimEnabled", {
+        Text = "Aimbot", Default = false, Tooltip = "Hold right click to aim",
+        Callback = function(value: boolean)
+            aimEnabled = value
+            if not value then
+                aiming = false
+                currentTarget = nil
+            end
+            notify("Aim", value and "Aimbot enabled" or "Aimbot disabled", 2)
+        end,
+    })
+
+    AimBox:AddDropdown("AimPart", {
+        Values = { "Head", "HumanoidRootPart", "Torso", "UpperTorso", "LowerTorso" }, Default = 1,
+        Multi = false, Text = "Target Part", Tooltip = "Where to aim",
+        Callback = function(value: string) aimPart = value end,
+    })
+
+    AimBox:AddSlider("AimFOV", {
+        Text = "Aimbot FOV", Default = aimFOV, Min = 50, Max = 500, Rounding = 0,
+        Callback = function(value: number)
+            aimFOV = value
+            if FOVCircle then FOVCircle.Radius = value end
+        end,
+    })
+
+    AimBox:AddSlider("AimSensitivity", {
+        Text = "Sensitivity", Default = aimSensitivity, Min = 1, Max = 100, Rounding = 0,
+        Callback = function(value: number) aimSensitivity = value end,
+    })
+
+    AimBox:AddToggle("UseSensitivity", {
+        Text = "Use Sensitivity", Default = true, Tooltip = "Smooth aim",
+        Callback = function(value: boolean) useSensitivity = value end,
+    })
+
+    AimBox:AddToggle("ShowFOV", {
+        Text = "Show FOV Circle", Default = false, Tooltip = "Draw FOV circle",
+        Callback = function(value: boolean)
+            if not FOVCircle then
+                fovCircleEnabled = false
+                notify("Aim", "Your executor does not support the Drawing API.", 4)
+                return
+            end
+            fovCircleEnabled = value
+            FOVCircle.Visible = value
+        end,
+    })
+end
+
+-- ==================== ESP TAB ====================
+do
+    local WorldESP = Tabs.ESP:AddLeftGroupbox("World ESP", "eye")
+    local NPCESP = Tabs.ESP:AddRightGroupbox("NPC ESP", "users")
+
+    WorldESP:AddToggle("CameraESP", {
+        Text = "Camera ESP", Default = false, Tooltip = "Red = active, Orange = broken",
+        Callback = function(value: boolean)
+            cameraESPEnabled = value
+            if ActorWorker.use then
+                sendToWorker("SetCameraESP", value)
+                if not value then clearHighlightsMain(cameraHighlights) end
+                return
+            end
+
+            if value then
+                spawnWorker(function()
+                    while cameraESPEnabled do
+                        clearHighlightsMain(cameraHighlights)
+                        safeCall(function()
+                            for _, folderName: string in ipairs({ "Cameras", "BrokenCameras" }) do
+                                local folder: Instance? = Workspace:FindFirstChild(folderName)
+                                if folder then
+                                    for _, cam: Instance in ipairs(folder:GetChildren()) do
+                                        local color: Color3 = (folderName == "BrokenCameras") and Color3.fromRGB(255, 165, 0) or Color3.fromRGB(255, 0, 0)
+                                        local hl: Highlight? = createHighlightMain(cam, color)
+                                        if hl then table.insert(cameraHighlights, hl) end
+                                    end
+                                end
+                            end
+                        end)
+                        task.wait(2)
+                    end
+                    clearHighlightsMain(cameraHighlights)
+                end)
+            else clearHighlightsMain(cameraHighlights) end
+        end,
+    })
+
+    NPCESP:AddToggle("PoliceESP", {
+        Text = "Police ESP", Default = false, Tooltip = "Police in blue",
+        Callback = function(value: boolean)
+            policeESPEnabled = value
+            if ActorWorker.use then
+                sendToWorker("SetPoliceESP", value)
+                if not value then clearHighlightsMain(policeHighlights) end
+                return
+            end
+
+            if value then
+                spawnWorker(function()
+                    while policeESPEnabled do
+                        clearHighlightsMain(policeHighlights)
+                        safeCall(function()
+                            for _, folderName: string in ipairs({ "Police", "Bodies" }) do
+                                local folder: Instance? = Workspace:FindFirstChild(folderName)
+                                if folder then
+                                    for _, cop: Instance in ipairs(folder:GetChildren()) do
+                                        local hl: Highlight? = createHighlightMain(cop, Color3.fromRGB(0, 100, 255))
+                                        if hl then table.insert(policeHighlights, hl) end
+                                    end
+                                end
+                            end
+                        end)
+                        task.wait(2)
+                    end
+                    clearHighlightsMain(policeHighlights)
+                end)
+            else clearHighlightsMain(policeHighlights) end
+        end,
+    })
+
+    NPCESP:AddToggle("CivilianESP", {
+        Text = "Civilian ESP", Default = false, Tooltip = "Green = free, Yellow = tied",
+        Callback = function(value: boolean)
+            civilianESPEnabled = value
+            if ActorWorker.use then
+                sendToWorker("SetCivilianESP", value)
+                if not value then clearHighlightsMain(civilianHighlights) end
+                return
+            end
+
+            if value then
+                spawnWorker(function()
+                    while civilianESPEnabled do
+                        clearHighlightsMain(civilianHighlights)
+                        safeCall(function()
+                            local citizens: Instance? = Workspace:FindFirstChild("Citizens")
+                            if citizens then
+                                for _, citizen: Instance in ipairs(citizens:GetChildren()) do
+                                    local isTied: number? = citizen.Name:lower():find("tied")
+                                    local color: Color3 = isTied and Color3.fromRGB(255, 255, 0) or Color3.fromRGB(0, 255, 0)
+                                    local hl: Highlight? = createHighlightMain(citizen, color)
+                                    if hl then table.insert(civilianHighlights, hl) end
+                                end
+                            end
+                        end)
+                        task.wait(2)
+                    end
+                    clearHighlightsMain(civilianHighlights)
+                end)
+            else clearHighlightsMain(civilianHighlights) end
+        end,
+    })
+
+    WorldESP:AddToggle("KeyCardESP", {
+        Text = "KeyCard ESP", Default = false, Tooltip = "Keycards in gold",
+        Callback = function(value: boolean)
+            keyCardESPEnabled = value
+            if ActorWorker.use then
+                sendToWorker("SetKeyCardESP", value)
+                if not value then clearHighlightsMain(keyCardHighlights) end
+                return
+            end
+
+            if value then
+                spawnWorker(function()
+                    while keyCardESPEnabled do
+                        clearHighlightsMain(keyCardHighlights)
+                        safeCall(function()
+                            local map: Instance? = Workspace:FindFirstChild("Map")
+                            local keyCardFolder: Instance? = map and map:FindFirstChild("KeyCard")
+                            local keyCard: Instance? = keyCardFolder and keyCardFolder:FindFirstChild("KeyCard")
+                            if keyCard then
+                                local hl: Highlight? = createHighlightMain(keyCard, Color3.fromRGB(255, 215, 0))
+                                if hl then table.insert(keyCardHighlights, hl) end
+                            end
+                        end)
+                        task.wait(2)
+                    end
+                    clearHighlightsMain(keyCardHighlights)
+                end)
+            else clearHighlightsMain(keyCardHighlights) end
+        end,
+    })
+end
+
+-- ==================== SPECIFIC MAPS TAB ====================
+do
+    local selectedMap: string = "The Ozela Heist"
+
+    local MapSelectGroup = Tabs.Maps:AddLeftGroupbox("Map Selection", "map")
+    MapSelectGroup:AddDropdown("MapSelect", {
+        Values = { "The Ozela Heist" }, Default = 1, Multi = false,
+        Text = "Select Map", Tooltip = "Only The Ozela Heist has extra tools for now",
+        Callback = function(value: string) selectedMap = value end,
+    })
+    MapSelectGroup:AddLabel("More maps can be added later.", true)
+
+    local ESPGroup = Tabs.Maps:AddLeftGroupbox("Ozela ESP", "eye")
+
+    ESPGroup:AddToggle("RopeESP", {
+        Text = "Rope ESP", Default = false, Tooltip = "Ropes in yellow",
+        Callback = function(value: boolean)
+            ropeESPEnabled = value
+            if ActorWorker.use then
+                sendToWorker("SetRopeESP", value)
+                if not value then clearHighlightsMain(ropeHighlights) end
+                return
+            end
+
+            if value then
+                spawnWorker(function()
+                    while ropeESPEnabled do
+                        clearHighlightsMain(ropeHighlights)
+                        safeCall(function()
+                            local mapEntities: Instance? = Workspace:FindFirstChild("mapEntities")
+                            local missionItems: Instance? = mapEntities and mapEntities:FindFirstChild("missionItems")
+                            local ropes: Instance? = missionItems and missionItems:FindFirstChild("Ropes")
+                            if ropes then
+                                for _, rope: Instance in ipairs(ropes:GetChildren()) do
+                                    local hl: Highlight? = createHighlightMain(rope, Color3.fromRGB(255, 255, 0))
+                                    if hl then table.insert(ropeHighlights, hl) end
+                                end
+                            end
+                        end)
+                        task.wait(2)
+                    end
+                    clearHighlightsMain(ropeHighlights)
+                end)
+            else clearHighlightsMain(ropeHighlights) end
+        end,
+    })
+
+    ESPGroup:AddToggle("HookESP", {
+        Text = "Hook ESP", Default = false, Tooltip = "Hooks in lime",
+        Callback = function(value: boolean)
+            hookESPEnabled = value
+            if ActorWorker.use then
+                sendToWorker("SetHookESP", value)
+                if not value then clearHighlightsMain(hookHighlights) end
+                return
+            end
+
+            if value then
+                spawnWorker(function()
+                    while hookESPEnabled do
+                        clearHighlightsMain(hookHighlights)
+                        safeCall(function()
+                            local mapEntities: Instance? = Workspace:FindFirstChild("mapEntities")
+                            local missionItems: Instance? = mapEntities and mapEntities:FindFirstChild("missionItems")
+                            local hooks: Instance? = missionItems and missionItems:FindFirstChild("Hooks")
+                            if hooks then
+                                for _, hook: Instance in ipairs(hooks:GetChildren()) do
+                                    local hl: Highlight? = createHighlightMain(hook, Color3.fromRGB(0, 255, 100))
+                                    if hl then table.insert(hookHighlights, hl) end
+                                end
+                            end
+                        end)
+                        task.wait(2)
+                    end
+                    clearHighlightsMain(hookHighlights)
+                end)
+            else clearHighlightsMain(hookHighlights) end
+        end,
+    })
+
+    ESPGroup:AddToggle("CodeTableESP", {
+        Text = "Code Table ESP", Default = false, Tooltip = "Code table in purple",
+        Callback = function(value: boolean)
+            codeTableESPEnabled = value
+            if ActorWorker.use then
+                sendToWorker("SetCodeTableESP", value)
+                if not value then clearHighlightsMain(codeTableHighlights) end
+                return
+            end
+
+            if value then
+                spawnWorker(function()
+                    while codeTableESPEnabled do
+                        clearHighlightsMain(codeTableHighlights)
+                        safeCall(function()
+                            local blueprints: Instance? = Workspace:FindFirstChild("Blueprints")
+                            local stadiumBlueprint: Instance? = blueprints and blueprints:FindFirstChild("prop_stadium_blueprintTableRNG")
+                            local codeTable: Instance? = stadiumBlueprint and stadiumBlueprint:FindFirstChild("prop_office_TablePlastic")
+                            if codeTable then
+                                local hl: Highlight? = createHighlightMain(codeTable, Color3.fromRGB(200, 0, 255))
+                                if hl then table.insert(codeTableHighlights, hl) end
+                            end
+                        end)
+                        task.wait(2)
+                    end
+                    clearHighlightsMain(codeTableHighlights)
+                end)
+            else clearHighlightsMain(codeTableHighlights) end
+        end,
+    })
+
+    local CodeGroup = Tabs.Maps:AddRightGroupbox("Ozela Codes", "list")
+
+    codeStatusLabel = CodeGroup:AddLabel("Color Box Code\nPress 'Detect' to scan.", true)
+    usbStatusLabel = CodeGroup:AddLabel("USB Computer Code\nPress 'Check' to read.", true)
+
+    CodeGroup:AddButton({
+        Text = "Detect Color Box Code", Tooltip = "Scan for correct box & colors",
+        Func = function()
+            local info: BoxCodeInfo? = updateColorBoxStatus()
+            if info and info.correctCode ~= "" then
+                notify("Color Box", "Correct code: " .. info.correctCode, 4)
+            else notify("Color Box", "No codes detected yet", 3) end
+        end,
+    })
+
+    CodeGroup:AddButton({
+        Text = "Check USB Computer Code", Tooltip = "Read current USB code",
+        Func = function()
+            updateUSBStatus()
+            local status: string = getUSBComputerStatus()
+            if status ~= "Not found" then notify("USB Computer", "Code: " .. status, 4)
+            else notify("USB Computer", "Computer not found or no code", 3) end
+        end,
+    })
+
+    CodeGroup:AddToggle("AutoRefreshUSB", {
+        Text = "Auto-Refresh USB", Default = false, Tooltip = "Update USB code every 2s",
+        Callback = function(value: boolean)
+            autoRefreshUSBEnabled = value
+            if value then
+                spawnWorker(function()
+                    while autoRefreshUSBEnabled do
+                        updateUSBStatus()
+                        task.wait(2)
+                    end
+                end)
+                notify("USB Auto-Refresh", "Enabled", 2)
+            else notify("USB Auto-Refresh", "Disabled", 2) end
+        end,
+    })
+
+    local TPGroup = Tabs.Maps:AddRightGroupbox("Ozela Teleports", "navigation")
+
+    TPGroup:AddButton({
+        Text = "Nearest Rope", Tooltip = "Teleport to closest rope",
+        Func = function()
+            safeCall(function()
+                local character: Model? = LocalPlayer.Character
+                local hrp: BasePart? = character and character:FindFirstChild("HumanoidRootPart") :: BasePart?
+                if not hrp then return end
+
+                local mapEntities: Instance? = Workspace:FindFirstChild("mapEntities")
+                local missionItems: Instance? = mapEntities and mapEntities:FindFirstChild("missionItems")
+                local ropes: Instance? = missionItems and missionItems:FindFirstChild("Ropes")
+                if not ropes then notify("Teleport", "Ropes folder not found!", 3); return end
+
+                local closestPart: BasePart? = nil
+                local shortest: number = math.huge
+
+                for _, rope: Instance in ipairs(ropes:GetChildren()) do
+                    local ropePart: BasePart? = rope:IsA("BasePart") and (rope :: BasePart) or rope:FindFirstChildWhichIsA("BasePart")
+                    if ropePart then
+                        local dist: number = (hrp.Position - ropePart.Position).Magnitude
+                        if dist < shortest then
+                            shortest = dist
+                            closestPart = ropePart
+                        end
+                    end
+                end
+
+                if closestPart then
+                    hrp.CFrame = closestPart.CFrame + Vector3.new(0, 3, 0)
+                    notify("Teleport", "Teleported to Rope!", 2)
+                end
+            end, "Error teleporting to rope")
+        end,
+    })
+
+    TPGroup:AddButton({
+        Text = "Nearest Hook", Tooltip = "Teleport to closest hook",
+        Func = function()
+            safeCall(function()
+                local character: Model? = LocalPlayer.Character
+                local hrp: BasePart? = character and character:FindFirstChild("HumanoidRootPart") :: BasePart?
+                if not hrp then return end
+
+                local mapEntities: Instance? = Workspace:FindFirstChild("mapEntities")
+                local missionItems: Instance? = mapEntities and mapEntities:FindFirstChild("missionItems")
+                local hooks: Instance? = missionItems and missionItems:FindFirstChild("Hooks")
+                if not hooks then notify("Teleport", "Hooks folder not found!", 3); return end
+
+                local closestPart: BasePart? = nil
+                local shortest: number = math.huge
+
+                for _, hook: Instance in ipairs(hooks:GetChildren()) do
+                    local hookPart: BasePart? = hook:IsA("BasePart") and (hook :: BasePart) or hook:FindFirstChildWhichIsA("BasePart")
+                    if hookPart then
+                        local dist: number = (hrp.Position - hookPart.Position).Magnitude
+                        if dist < shortest then
+                            shortest = dist
+                            closestPart = hookPart
+                        end
+                    end
+                end
+
+                if closestPart then
+                    hrp.CFrame = closestPart.CFrame + Vector3.new(0, 3, 0)
+                    notify("Teleport", "Teleported to Hook!", 2)
+                end
+            end, "Error teleporting to hook")
+        end,
+    })
+
+    TPGroup:AddButton({
+        Text = "Code Table", Tooltip = "Teleport to code table",
+        Func = function()
+            safeCall(function()
+                local character: Model? = LocalPlayer.Character
+                local hrp: BasePart? = character and character:FindFirstChild("HumanoidRootPart") :: BasePart?
+                if not hrp then return end
+
+                local blueprints: Instance? = Workspace:FindFirstChild("Blueprints")
+                local stadiumBlueprint: Instance? = blueprints and blueprints:FindFirstChild("prop_stadium_blueprintTableRNG")
+                local codeTable: Instance? = stadiumBlueprint and stadiumBlueprint:FindFirstChild("prop_office_TablePlastic")
+                if not codeTable then notify("Teleport", "Code Table not found!", 3); return end
+
+                local tablePart: BasePart? = codeTable.PrimaryPart or codeTable:FindFirstChildWhichIsA("BasePart")
+                if tablePart then
+                    hrp.CFrame = tablePart.CFrame + Vector3.new(0, 5, 0)
+                    notify("Teleport", "Teleported to Code Table!", 2)
+                end
+            end, "Error teleporting to Code Table")
+        end,
+    })
+
+    TPGroup:AddButton({
+        Text = "Correct Color Box", Tooltip = "Teleport to detected color box",
+        Func = function()
+            safeCall(function()
+                local character: Model? = LocalPlayer.Character
+                local hrp: BasePart? = character and character:FindFirstChild("HumanoidRootPart") :: BasePart?
+                if not hrp then return end
+
+                local info: BoxCodeInfo = detectColorBoxCode()
+                if info.colorBoxName == "" then notify("Teleport", "Detect Color Box code first!", 3); return end
+
+                local colorBoxRNG: Instance? = Workspace:FindFirstChild("colorBoxRNG")
+                local colorBox: Instance? = colorBoxRNG and colorBoxRNG:FindFirstChild(info.colorBoxName)
+                if not colorBox then notify("Teleport", "Color box not found!", 3); return end
+
+                local boxPart: BasePart? = colorBox.PrimaryPart or colorBox:FindFirstChildWhichIsA("BasePart")
+                if boxPart then
+                    hrp.CFrame = boxPart.CFrame + Vector3.new(0, 5, 0)
+                    notify("Teleport", "Teleported to: " .. info.colorBoxName, 3)
+                end
+            end, "Error teleporting to Color Box")
+        end,
+    })
+end
+
+-- ==================== GAME STATS TAB ====================
+do
+    local StatsGroup = Tabs.Stats:AddLeftGroupbox("Player Statistics", "bar-chart")
+
+    local statsLabel = StatsGroup:AddLabel("Your Statistics\n\nPress refresh to load.", true)
+
+    StatsGroup:AddButton({
+        Text = "Refresh", Tooltip = "Load stats from server",
+        Func = function()
+            safeCall(function()
+                local rs: Instance? = getRS()
+                local remotes: Instance? = rs and rs:FindFirstChild("Remotes")
+                local getStats: RemoteFunction? = remotes and remotes:FindFirstChild("GetStats") :: RemoteFunction?
+
+                if not getStats then
+                    notify("Stats", "Stats remote not found!", 3)
+                    return
+                end
+
+                notify("Stats", "Loading statistics...", 2)
+                local stats: any = getStats:InvokeServer()
+
+                if not stats then
+                    statsLabel:SetText("Error loading statistics.\nTry again in a few seconds.")
+                    notify("Stats", "Failed to load stats!", 3)
+                    return
+                end
+
+                local t: string = "Your Statistics:\n\n"
+                t = t .. "Kills:\n"
+                t = t .. "  Police: " .. tostring(stats.PoliceKills or 0) .. "\n"
+                t = t .. "  Civilians: " .. tostring(stats.CivilianKills or 0) .. "\n"
+                t = t .. "  Headshots: " .. tostring(stats.Headshots or 0) .. "\n\n"
+                t = t .. "Money:\n"
+                t = t .. "  Instant Cash: $" .. tostring(stats.InstantCash or 0) .. "\n\n"
+                t = t .. "Support:\n"
+                t = t .. "  Revives: " .. tostring(stats.Revives or 0) .. "\n"
+                t = t .. "  Downs: " .. tostring(stats.Downs or 0) .. "\n\n"
+                t = t .. "Weapon Stats:\n"
+
+                if stats.GunStats and typeof(stats.GunStats) == "table" then
+                    local hasGun: boolean = false
+                    for gunName: string, gunData: any in pairs(stats.GunStats) do
+                        if typeof(gunData) == "table" then
+                            hasGun = true
+                            t = t .. "  " .. gunName .. ":\n"
+                            if gunData.Kills then t = t .. "    Kills: " .. tostring(gunData.Kills) .. "\n" end
+                            if gunData.Shots then t = t .. "    Shots: " .. tostring(gunData.Shots) .. "\n" end
+                            if gunData.Headshots then t = t .. "    Headshots: " .. tostring(gunData.Headshots) .. "\n" end
+                        end
+                    end
+                    if not hasGun then t = t .. "  No weapon stats recorded\n" end
+                else t = t .. "  No weapon stats available\n" end
+
+                t = t .. "\nInteractions:\n"
+                t = t .. "  Total: " .. tostring(stats.Interactions or 0)
+
+                statsLabel:SetText(t)
+                notify("Stats", "Stats loaded!", 3)
+            end, "Error loading statistics")
+        end,
+    })
+
+    local InfoGroup = Tabs.Stats:AddRightGroupbox("Info", "info")
+    InfoGroup:AddLabel(
+        "Stats are from the game server.\n\n" ..
+        "Tracked: PoliceKills, CivilianKills,\n" ..
+        "Headshots, InstantCash, Revives,\n" ..
+        "Downs, GunStats, Interactions.",
+        true
+    )
+end
+
+-- ==================== DEBUG TAB ====================
+do
+    local SyncGroup = Tabs.Debug:AddLeftGroupbox("Guard Sync", "refresh-cw")
+
+    SyncGroup:AddLabel("Fixes guard lag when turning camera.\nRuns guard repositioning every frame.", true)
+
+    SyncGroup:AddToggle("InstantGuardSync", {
+        Text = "Instant Guard Sync", Default = false,
+        Tooltip = "Guards reposition every frame instead of every 0.1s.",
+        Callback = function(value: boolean)
+            instantGuardSyncEnabled = value
+            if instantGuardSyncConnection then
+                instantGuardSyncConnection:Disconnect()
+                instantGuardSyncConnection = nil
+            end
+
+            if value and visualKillAllActive then
+                if ActorWorker.use then sendToWorker("SetBringGuards", false, guardStackDistance, guardFacingMode) end
+                instantGuardSyncConnection = RunService.RenderStepped:Connect(bringGuardsStepLocal)
+                notify("Debug", "Instant Guard Sync active", 2)
+            elseif not value and visualKillAllActive then
+                if ActorWorker.use then sendToWorker("SetBringGuards", true, guardStackDistance, guardFacingMode) end
+                notify("Debug", "Instant Guard Sync disabled - using normal loop", 2)
+            end
+        end,
+    })
+
+    local FastGroup = Tabs.Debug:AddRightGroupbox("Fast Interact (Alts)", "zap")
+
+    FastGroup:AddLabel(
+        "Experimental fast-interact alternatives.\n" ..
+        "Enable the master toggle and any modes below.\n" ..
+        "May bypass some hold-to-interact prompts.",
+        true
+    )
+
+    FastGroup:AddToggle("FastInteractMaster", {
+        Text = "Enable Fast Interact (Alts)", Default = false, Tooltip = "Master toggle for fast-interact alt methods.",
+        Callback = function(value: boolean)
+            fastInteractEnabled = value
+            notify("Debug", value and "Fast Interact (Alts) enabled" or "Fast Interact (Alts) disabled", 2)
+        end,
+    })
+
+    FastGroup:AddToggle("FastInteractFireProx", {
+        Text = "Mode: fireproximityprompt()", Default = false, Tooltip = "Uses exploit fireproximityprompt() on nearby prompts.",
+        Callback = function(value: boolean)
+            fastInteract_UseFireProx = value
+            if value and typeof(fireproximityprompt) ~= "function" then
+                notify("Debug", "fireproximityprompt is not available in this executor.", 4)
+            end
+        end,
+    })
+
+    FastGroup:AddToggle("FastInteractPromptEvents", {
+        Text = "Mode: Prompt:InputHoldBegin/End", Default = false, Tooltip = "Directly fires ProximityPrompt hold begin/end events.",
+        Callback = function(value: boolean) fastInteract_UsePromptEvents = value end,
+    })
+
+    FastGroup:AddToggle("FastInteractKeypress", {
+        Text = "Mode: VIM Key Spam", Default = false, Tooltip = "Simulates the prompt key (e.g. 'E') via VirtualInputManager.",
+        Callback = function(value: boolean)
+            if value and not VirtualInputManager then
+                notify("Debug", "VirtualInputManager not available – disabling VIM Key Spam mode.", 3)
+                fastInteract_UseKeyPress = false
+                if Toggles.FastInteractKeypress then Toggles.FastInteractKeypress:SetValue(false) end
+                return
+            end
+            fastInteract_UseKeyPress = value
+        end,
+    })
+end
+
+-- ==================== INPUT HANDLING ====================
+UserInputService.InputBegan:Connect(function(input: InputObject, gameProcessed: boolean)
+    if gameProcessed then return end
+    if input.UserInputType == Enum.UserInputType.MouseButton2 then
+        if aimEnabled then aiming = true end
+    end
+end)
+
+UserInputService.InputEnded:Connect(function(input: InputObject, _gameProcessed: boolean)
+    if input.UserInputType == Enum.UserInputType.MouseButton2 then
+        aiming = false
+        currentTarget = nil
+    elseif input.UserInputType == Enum.UserInputType.MouseButton1 then
+        if autoHoldM1Enabled and autoHoldM1Holding and VirtualInputManager and getTool() then
+            local mousePos: Vector2 = UserInputService:GetMouseLocation()
+            pcall(function() VirtualInputManager:SendMouseButtonEvent(mousePos.X, mousePos.Y, 0, true, game, 1) end)
+        end
+    end
+end)
+
+-- ==================== MAIN RENDER LOOP ====================
+RunService.RenderStepped:Connect(function()
+    if fovCircleEnabled and FOVCircle then
+        local mouseLocation: Vector2 = UserInputService:GetMouseLocation()
+        FOVCircle.Position = Vector2.new(mouseLocation.X, mouseLocation.Y)
+        FOVCircle.Visible = true
+    elseif FOVCircle then
+        FOVCircle.Visible = false
+    end
+
+    if aimEnabled then
+        currentTarget = getClosestPolice()
+        if aiming and currentTarget then aimAtTarget(currentTarget) end
+    else
+        currentTarget = nil
+    end
+
+    fastInteractStep()
+end)
+
+-- ==================== CLEANUP ====================
+local function cleanup()
+    autoHoldM1Enabled = false
+    fastInteractEnabled = false
+    instantGuardSyncEnabled = false
+
+    clearHighlightsMain(cameraHighlights)
+    clearHighlightsMain(policeHighlights)
+    clearHighlightsMain(civilianHighlights)
+    clearHighlightsMain(keyCardHighlights)
+    clearHighlightsMain(ropeHighlights)
+    clearHighlightsMain(hookHighlights)
+    clearHighlightsMain(codeTableHighlights)
+
+    if ActorWorker.use then
+        sendToWorker("SetCameraESP", false)
+        sendToWorker("SetPoliceESP", false)
+        sendToWorker("SetCivilianESP", false)
+        sendToWorker("SetKeyCardESP", false)
+        sendToWorker("SetRopeESP", false)
+        sendToWorker("SetHookESP", false)
+        sendToWorker("SetCodeTableESP", false)
+        sendToWorker("SetBringGuards", false, guardStackDistance, guardFacingMode)
+    end
+
+    if FOVCircle then pcall(function() FOVCircle:Remove() end) end
+
+    if tpWalkConnection then tpWalkConnection:Disconnect(); tpWalkConnection = nil end
+    if infJumpConnection then infJumpConnection:Disconnect(); infJumpConnection = nil end
+    if noclipLoop then noclipLoop:Disconnect(); noclipLoop = nil end
+    if gravityLoop then gravityLoop:Disconnect(); gravityLoop = nil end
+    if infiniteStaminaLoop then infiniteStaminaLoop:Disconnect(); infiniteStaminaLoop = nil end
+    if instantInteractConnection then instantInteractConnection:Disconnect(); instantInteractConnection = nil end
+    if autoAmmoLoop then autoAmmoLoop:Disconnect(); autoAmmoLoop = nil end
+    if autoHoldM1Loop then autoHoldM1Loop:Disconnect(); autoHoldM1Loop = nil end
+    if instantGuardSyncConnection then instantGuardSyncConnection:Disconnect(); instantGuardSyncConnection = nil end
+
+    if autoHoldM1Holding and VirtualInputManager then
+        autoHoldM1Holding = false
+        local mousePos: Vector2 = UserInputService:GetMouseLocation()
+        pcall(function() VirtualInputManager:SendMouseButtonEvent(mousePos.X, mousePos.Y, 0, false, game, 1) end)
+    end
+
+    safeCall(function()
+        for part: BasePart, wasCollide: boolean in pairs(noclipParts) do
+            if part and part.Parent then part.CanCollide = wasCollide end
+            noclipParts[part] = nil
+        end
+    end)
+
+    visualKillAllActive = false
+    autoRefreshUSBEnabled = false
+    ropeESPEnabled = false
+    hookESPEnabled = false
+    codeTableESPEnabled = false
+    cameraESPEnabled = false
+    policeESPEnabled = false
+    civilianESPEnabled = false
+    keyCardESPEnabled = false
+    autoAmmoEnabled = false
+    autoHoldM1Enabled = false
+    instantGuardSyncEnabled = false
+    fastInteractEnabled = false
+    fastInteract_UseFireProx = false
+    fastInteract_UsePromptEvents = false
+    fastInteract_UseKeyPress = false
+
+    Workspace.Gravity = 196.2
+    notify("SocrateS", "Cleanup completed!", 2)
+end
+
+Players.LocalPlayer.OnTeleport:Connect(cleanup)
+
+-- ==================== READY ====================
+notify("SocrateS v4.9", "Hub loaded successfully!", 5)
+notify("SocrateS", "All features ready.", 3)
