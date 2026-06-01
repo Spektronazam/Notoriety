@@ -364,12 +364,16 @@ end
 
 local function sendToWorker(msgType: string, ...: any)
     if ActorWorker.use and ActorWorker.channel then
-        ActorWorker.channel:Fire(msgType, ...)
+        local ch = ActorWorker.channel
+        if typeof(ch.Fire) == "function" then
+            ch:Fire(msgType, ...)
+        elseif typeof(ch.Send) == "function" then
+            ch:Send(msgType, ...)
+        else
+            -- Fallback attempt if it's a direct function
+            pcall(function() ch(msgType, ...) end)
+        end
     end
-end
-
-local function spawnWorker(fn: () -> ())
-    task.spawn(fn)
 end
 
 -- ==================== WINDOW CREATION ====================
