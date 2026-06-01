@@ -2,6 +2,10 @@
     SocrateS - Notoriety
     -Iris made this <3
 
+    v4.9.1:
+    - Fixed Actor worker crash (comm channel .Event fallback)
+    - ESP and Bring Guards now initialize correctly on all executors
+
     v4.9:
     - Better Typechecking (Strict Luau implementation)
     - Better OTH & Actor implementation (Madium API support)
@@ -12,7 +16,7 @@
 -- ==================== UI LIB (OBSIDIAN) ====================
 local repo: string = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/"
 
-local ok: boolean, a: any, b: any, c: any = pcall(function()
+local ok: boolean, uiLib: any, themeMgr: any, saveMgr: any = pcall(function()
     local lib = loadstring(game:HttpGet(repo .. "Library.lua"))()
     local theme = loadstring(game:HttpGet(repo .. "addons/ThemeManager.lua"))()
     local save = loadstring(game:HttpGet(repo .. "addons/SaveManager.lua"))()
@@ -20,19 +24,13 @@ local ok: boolean, a: any, b: any, c: any = pcall(function()
 end)
 
 if not ok then
-    -- On failure, a holds the error message (not a library handle).
-    warn("[SocrateS] Failed to load Obsidian UI library:", tostring(a))
+    warn("[SocrateS] Failed to load Obsidian UI library:", uiLib)
     return
 end
 
-if not (a and b and c) then
-    warn("[SocrateS] Obsidian load returned nil handles; aborting.")
-    return
-end
-
-local Library = a
-local ThemeManager = b
-local SaveManager = c
+local Library = uiLib
+local ThemeManager = themeMgr
+local SaveManager = saveMgr
 
 local Options = Library.Options
 local Toggles = Library.Toggles
@@ -78,11 +76,14 @@ local ActorWorker = {
 }
 
 if ActorWorker.use then
-    -- FIX #10: Always create a dedicated actor instead of hijacking getactors()[1],
-    -- which may be an unrelated actor owned by the game.
-    local actor: Actor = Instance.new("Actor")
-    actor.Name = "SocrateS_WorkerActor"
-    actor.Parent = Workspace
+    local actors: {Actor} = getactors()
+    local actor: Actor? = actors[1]
+
+    if not actor then
+        actor = Instance.new("Actor")
+        actor.Name = "SocrateS_WorkerActor"
+        actor.Parent = Workspace
+    end
 
     local id: string, channel: any = create_comm_channel("SocrateS_Worker")
     ActorWorker.channelId = id
@@ -318,16 +319,9 @@ if ActorWorker.use then
 
             local channelId: string = ...
             local channel: any = get_comm_channel(channelId)
+            local eventSignal = channel.Event or channel
 
-            -- Resolve the signal regardless of executor channel shape.
-            local signal: any = channel
-            if typeof(channel) == "table" or typeof(channel) == "userdata" then
-                if channel.Event ~= nil then
-                    signal = channel.Event
-                end
-            end
-
-            signal:Connect(function(msgType: string, ...: any)
+            eventSignal:Connect(function(msgType: string, ...: any)
                 local args: {any} = { ... }
 
                 if msgType == "SetCameraESP" then cameraESPEnabled = not not args[1]
@@ -369,25 +363,13 @@ else
 end
 
 local function sendToWorker(msgType: string, ...: any)
-    if not (ActorWorker.use and ActorWorker.channel) then return end
-
-    local ch: any = ActorWorker.channel
-    local args = table.pack(...)
-
-    local fired: boolean = pcall(function()
-        if typeof(ch.Fire) == "function" then
-            ch:Fire(msgType, table.unpack(args, 1, args.n))
-        elseif ch.Event ~= nil and typeof(ch.Event.Fire) == "function" then
-            ch.Event:Fire(msgType, table.unpack(args, 1, args.n))
-        else
-            error("no compatible Fire method on comm channel")
-        end
-    end)
-
-    if not fired then
-        warn("[SocrateS] Failed to send to worker actor; disabling actor path.")
-        ActorWorker.use = false
+    if ActorWorker.use and ActorWorker.channel then
+        ActorWorker.channel:Fire(msgType, ...)
     end
+end
+
+local function spawnWorker(fn: () -> ())
+    task.spawn(fn)
 end
 
 -- ==================== WINDOW CREATION ====================
@@ -586,6 +568,12 @@ local function clearHighlightsMain(tbl: {Highlight?})
     end
 end
 
+local function getTool(): Tool?
+    local character: Model? = LocalPlayer.Character
+    if not character then return nil end
+    return character:FindFirstChildOfClass("Tool")
+end
+
 -- ==================== FAST INTERACT PROMPT TRACKING ====================
 local function trackFastInteractPrompt(obj: Instance)
     if not (obj and obj:IsA("ProximityPrompt")) then return end
@@ -671,10 +659,6 @@ local function getEquippedWeapon(): Tool?
     return character:FindFirstChildOfClass("Tool")
 end
 
--- FIX #1: getTool() was referenced throughout (Auto Hold, Destruction, InputEnded)
--- but never defined. Alias keeps a single source of truth.
-local getTool = getEquippedWeapon
-
 local function getOriginalWeaponEntry(dataModule: ModuleScript, weaponData: { [string]: any }): OriginalWeaponEntry
     local entry: OriginalWeaponEntry? = OriginalWeaponData[dataModule]
     if entry then return entry end
@@ -703,43 +687,127 @@ local function getOriginalWeaponEntry(dataModule: ModuleScript, weaponData: { [s
     return entry
 end
 
--- Teleport cleanup (Player.OnTeleport is a valid Player event).
-pcall(function()
-    Players.LocalPlayer.OnTeleport:Connect(safeCleanup)
-end)
+local function buffCurrentWeapon()
+    safeCall(function()
+        local criminals: Instance? = Workspace:FindFirstChild("Criminals")
+        if not criminals then
+            notify("Weapon Mod", "Criminals folder not found", 3)
+            return
+        end
 
--- Register unload across every known Obsidian fork API.
-local unloadRegistered: boolean = false
+        local charFolder: Instance? = criminals:FindFirstChild(LocalPlayer.Name)
+        if not charFolder then
+            notify("Weapon Mod", "You are not in Criminals!", 3)
+            return
+        end
 
--- Method-style: Library:OnUnload(fn)
-if typeof(Library.OnUnload) == "function" then
-    local ok: boolean = pcall(function()
-        Library:OnUnload(safeCleanup)
-    end)
-    if ok then unloadRegistered = true end
-end
+        local function scaleField(tbl: any, key: string, factor: number, minValue: number?, maxValue: number?, orig: any?)
+            local base: number = orig and orig[key] or tbl[key]
+            if typeof(base) == "number" then
+                local new: number = base * factor
+                if minValue or maxValue then
+                    new = math.clamp(new, minValue or -math.huge, maxValue or math.huge)
+                end
+                tbl[key] = new
+            end
+        end
 
--- Callback-list style: Library.Unloaded is a signal/table some forks fire on close.
-if not unloadRegistered and typeof(Library.Unloaded) == "table" then
-    table.insert(Library.Unloaded, safeCleanup)
-    unloadRegistered = true
-end
+        local ammoNames: {string} = { "Ammo", "StoredAmmo", "ReserveAmmo", "MaxAmmo", "AmmoMax", "TotalAmmo", "CurrentAmmo" }
+        local magNames: {string} = { "MagSize", "Magazine", "Clip", "ClipSize", "CurrentClip" }
 
--- Signal style: Library.OnUnloaded:Connect(fn)
-if not unloadRegistered
-    and typeof(Library.OnUnloaded) == "table"
-    and typeof(Library.OnUnloaded.Connect) == "function"
-then
-    local ok: boolean = pcall(function()
-        Library.OnUnloaded:Connect(safeCleanup)
-    end)
-    if ok then unloadRegistered = true end
-end
+        local function scaleIntValuesInGun(root: Instance, factorAmmo: number, factorMag: number)
+            for _, v: Instance in ipairs(root:GetDescendants()) do
+                if v:IsA("IntValue") then
+                    if table.find(ammoNames, v.Name) then
+                        local base: any = v:GetAttribute("SocrateS_OrigAmmo")
+                        if base == nil then
+                            base = v.Value
+                            v:SetAttribute("SocrateS_OrigAmmo", base)
+                        end
+                        local new: number = math.floor(base * factorAmmo)
+                        v.Value = math.clamp(new, 0, 99999)
+                    elseif table.find(magNames, v.Name) then
+                        local base: any = v:GetAttribute("SocrateS_OrigMag")
+                        if base == nil then
+                            base = v.Value
+                            v:SetAttribute("SocrateS_OrigMag", base)
+                        end
+                        local new: number = math.floor(base * factorMag)
+                        v.Value = math.clamp(new, 1, 1000)
+                    end
+                end
+            end
+        end
 
--- Last-resort field assignment (only useful on forks that actually read it).
-if not unloadRegistered then
-    Library.OnUnload = safeCleanup
-    warn("[SocrateS] Unload hook fell back to field assignment; cleanup on UI close may not fire on this fork.")
+        local weaponsToBuff: {Instance} = {}
+
+        if buffEquippedOnly then
+            local equipped: Tool? = getEquippedWeapon()
+            if not equipped then
+                notify("Weapon Mod", "No equipped weapon found", 3)
+                return
+            end
+            table.insert(weaponsToBuff, equipped)
+        else
+            weaponsToBuff = charFolder:GetChildren()
+        end
+
+        local buffed: number = 0
+
+        for _, obj: Instance in ipairs(weaponsToBuff) do
+            local dataModule: Instance? = obj:FindFirstChild("Data")
+            if dataModule and dataModule:IsA("ModuleScript") then
+                local weaponData: any = require(dataModule)
+                if typeof(weaponData) == "table" then
+                    local s: WeaponBuffSettings = WeaponBuffSettings
+                    local orig: OriginalWeaponEntry = getOriginalWeaponEntry(dataModule, weaponData)
+
+                    for key: string, base: any in pairs(orig) do
+                        if typeof(base) == "number" then
+                            local lower: string = string.lower(key)
+                            if lower:find("damage") then
+                                local cur: any = weaponData[key]
+                                if typeof(cur) == "number" then
+                                    local new: number = base * s.Damage
+                                    weaponData[key] = math.clamp(new, 1, 10000)
+                                end
+                            end
+                        end
+                    end
+
+                    if typeof(orig.FireDelay) == "number" then
+                        local fireFactor: number = 1 / math.max(s.FireRate, 0.1)
+                        weaponData.FireDelay = math.clamp(orig.FireDelay * fireFactor, 0.03, 1)
+                    end
+
+                    scaleField(weaponData, "MagazineSize", s.Magazine, 1, 1000, orig)
+                    scaleField(weaponData, "AmmoMax",      s.Ammo,     1, 5000, orig)
+
+                    if typeof(orig.ReloadTime) == "number" then
+                        local reloadFactor: number = 1 / math.max(s.Reload, 0.1)
+                        weaponData.ReloadTime = math.clamp(orig.ReloadTime * reloadFactor, 0.1, 10)
+                    end
+
+                    if typeof(orig.LongerReloadTime) == "number" then
+                        local reloadFactor: number = 1 / math.max(s.Reload, 0.1)
+                        weaponData.LongerReloadTime = math.clamp(orig.LongerReloadTime * reloadFactor, 0.1, 10)
+                    end
+
+                    scaleField(weaponData, "Accuracy", s.Accuracy, 0, 100, orig)
+                    scaleIntValuesInGun(obj, s.Ammo, s.Magazine)
+
+                    buffed += 1
+                end
+            end
+        end
+
+        if buffed > 0 then
+            local scope: string = buffEquippedOnly and "equipped weapon" or ("weapon(s): " .. buffed)
+            notify("Weapon Mod", ("Buff applied to %s"):format(scope), 4)
+        else
+            notify("Weapon Mod", "No weapon data modules found to modify", 3)
+        end
+    end, "Error modifying weapon")
 end
 
 local function resetWeaponBuffs()
@@ -1075,7 +1143,8 @@ local Tabs = {
     Maps = Window:AddTab("Specific Maps", "map"),
     Stats = Window:AddTab("Game Stats", "bar-chart"),
     Changelog = Window:AddTab("Changelogs", "file-text"),
-    Debug = Window:AddTab("Debug", "bug"),["UI Settings"] = Window:AddTab("UI Settings", "settings"),
+    Debug = Window:AddTab("Debug", "bug"),
+    ["UI Settings"] = Window:AddTab("UI Settings", "settings"),
 }
 
 -- ==================== UI SETTINGS TAB ====================
@@ -1134,6 +1203,13 @@ end
 -- ==================== CHANGELOG TAB ====================
 do
     local Left = Tabs.Changelog:AddLeftGroupbox("Versions", "file-text")
+
+    Left:AddLabel("v4.9.1 – Actor & ESP Hotfix", true)
+    Left:AddLabel(
+        "• Fixed critical crash in Actor worker (comm channel .Event fallback).\n" ..
+        "• ESP and Bring Guards now initialize correctly on all executors.",
+        true
+    )
 
     Left:AddLabel("v4.9 – Optimization & OTH Integration", true)
     Left:AddLabel(
@@ -2435,14 +2511,9 @@ UserInputService.InputEnded:Connect(function(input: InputObject, _gameProcessed:
         aiming = false
         currentTarget = nil
     elseif input.UserInputType == Enum.UserInputType.MouseButton1 then
-        -- FIX: this getTool() call was unprotected; wrap it so an error can't leak
-        -- into the input pipeline.
-        if autoHoldM1Enabled and autoHoldM1Holding and VirtualInputManager then
-            local ok: boolean, tool: Tool? = pcall(getTool)
-            if ok and tool then
-                local mousePos: Vector2 = UserInputService:GetMouseLocation()
-                pcall(function() VirtualInputManager:SendMouseButtonEvent(mousePos.X, mousePos.Y, 0, true, game, 1) end)
-            end
+        if autoHoldM1Enabled and autoHoldM1Holding and VirtualInputManager and getTool() then
+            local mousePos: Vector2 = UserInputService:GetMouseLocation()
+            pcall(function() VirtualInputManager:SendMouseButtonEvent(mousePos.X, mousePos.Y, 0, true, game, 1) end)
         end
     end
 end)
@@ -2456,11 +2527,10 @@ RunService.RenderStepped:Connect(function()
     elseif FOVCircle then
         FOVCircle.Visible = false
     end
--- FIX #6: only scan for a target while actually aiming (right-click held),
-    -- instead of every frame the aimbot toggle is on.
-    if aimEnabled and aiming then
+
+    if aimEnabled then
         currentTarget = getClosestPolice()
-        if currentTarget then aimAtTarget(currentTarget) end
+        if aiming and currentTarget then aimAtTarget(currentTarget) end
     else
         currentTarget = nil
     end
@@ -2539,53 +2609,7 @@ local function cleanup()
     notify("SocrateS", "Cleanup completed!", 2)
 end
 
--- FIX #5: cleanup previously only ran on teleport, leaking Heartbeat/RenderStepped
--- connections when the UI unloaded. Bind unload too, with a guard against double-firing.
-local cleanedUp: boolean = false
-local function safeCleanup()
-    if cleanedUp then return end
-    cleanedUp = true
-    cleanup()
-end
-
--- Teleport cleanup (Player.OnTeleport is a valid Player event).
-pcall(function()
-    Players.LocalPlayer.OnTeleport:Connect(safeCleanup)
-end)
-
--- Register unload across every known Obsidian fork API.
-local unloadRegistered: boolean = false
-
--- Method-style: Library:OnUnload(fn)
-if typeof(Library.OnUnload) == "function" then
-    local ok: boolean = pcall(function()
-        Library:OnUnload(safeCleanup)
-    end)
-    if ok then unloadRegistered = true end
-end
-
--- Callback-list style: Library.Unloaded is a signal/table some forks fire on close.
-if not unloadRegistered and typeof(Library.Unloaded) == "table" then
-    table.insert(Library.Unloaded, safeCleanup)
-    unloadRegistered = true
-end
-
--- Signal style: Library.OnUnloaded:Connect(fn)
-if not unloadRegistered
-    and typeof(Library.OnUnloaded) == "table"
-    and typeof(Library.OnUnloaded.Connect) == "function"
-then
-    local ok: boolean = pcall(function()
-        Library.OnUnloaded:Connect(safeCleanup)
-    end)
-    if ok then unloadRegistered = true end
-end
-
--- Last-resort field assignment (only useful on forks that actually read it).
-if not unloadRegistered then
-    Library.OnUnload = safeCleanup
-    warn("[SocrateS] Unload hook fell back to field assignment; cleanup on UI close may not fire on this fork.")
-end
+Players.LocalPlayer.OnTeleport:Connect(cleanup)
 
 -- ==================== READY ====================
 notify("SocrateS v4.9", "Hub loaded successfully!", 5)
